@@ -203,3 +203,62 @@ class Alpha158Engine:
             return {}
         latest_row = factors_df.iloc[-1]
         return {col: float(val) for col, val in latest_row.items()}
+
+    @classmethod
+    def compute_symbol_summary(cls, symbol: str, df: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+        """
+        銘柄 1 つ分の Alpha158 要約を返す（合議のプロンプトと因子オントロジーが読む形）。
+
+        - key_factors のキーと単位は factor_ontology.py の REGISTRY に合わせる
+          （ROC_20 は %、RSV_20 は 0〜1、VMA_RATIO_20 は倍率、STD_20 は日次リターンの標準偏差 %）。
+        - composite_z_score は None を返す。158 因子を合成する定義も、標準化に使う母集団も
+          このリポジトリには無いので、値を作らない。
+        - 日足が取れない・足りないときは available=False を返す（空の辞書と区別できるようにする）。
+        """
+        if df is None:
+            try:
+                import yfinance as yf
+                from core.ai_hedge_fund.market_data_feed import MarketDataFeed
+                df = yf.Ticker(MarketDataFeed.normalize_symbol(symbol)).history(period="1y")
+            except Exception as e:
+                return {"symbol": symbol, "available": False, "reason": f"日足の取得に失敗: {e}"}
+
+        if df is None or len(df) < 61:
+            n = 0 if df is None else len(df)
+            return {"symbol": symbol, "available": False, "reason": f"日足が不足（{n} 本、61 本以上が必要）"}
+
+        factors = cls.get_latest_factors(df)
+        if not factors:
+            return {"symbol": symbol, "available": False, "reason": "因子を計算できなかった"}
+
+        def _num(v: Any) -> Optional[float]:
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return None
+            return f if np.isfinite(f) else None
+
+        cols = {c.lower(): c for c in df.columns}
+        close_p = df[cols["close"]].astype(float)
+        volume = df[cols["volume"]].astype(float)
+        vol_mean_20 = _num(volume.tail(20).mean())
+        vol_last = _num(volume.iloc[-1])
+        roc_20 = _num(factors.get("ROC20"))
+        key_factors = {
+            "ROC_20": None if roc_20 is None else round(roc_20 * 100.0, 4),
+            "RSV_20": _num(factors.get("RSV20")),
+            "VMA_RATIO_20": (
+                round(vol_last / vol_mean_20, 4) if vol_last is not None and vol_mean_20 else None
+            ),
+            "STD_20": _num(close_p.pct_change().tail(20).std() * 100.0),
+        }
+        as_of = df.index[-1]
+        return {
+            "symbol": symbol,
+            "available": True,
+            "as_of": as_of.strftime("%Y-%m-%d") if hasattr(as_of, "strftime") else str(as_of),
+            "n_factors": len(factors),
+            "n_factors_valid": sum(1 for v in factors.values() if _num(v) is not None),
+            "composite_z_score": None,
+            "key_factors": key_factors,
+        }
