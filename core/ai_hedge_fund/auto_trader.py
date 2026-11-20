@@ -79,10 +79,12 @@ class AutoTrader:
         """
         try:
             ob = broker_engine.get_order_book(symbol, depth=10)
-        except Exception:
-            ob = {}
+        except Exception as ob_err:
+            ob = {"available": False, "reason": f"板情報の取得で例外: {ob_err}"}
 
         ofi = dict(ob.get("ofi_analysis", {}) if ob else {})
+        # 板が無いときの deep_ofi_score 0.0 は「中立」ではなく「不明」。呼ぶ側が区別できるようにする。
+        ofi["order_book_available"] = bool(ob) and ob.get("available", True) is not False
         is_spoof_trap = ofi.get("is_spoof_buy_wall", False)
         deep_ofi = ofi.get("deep_ofi_score", 0.0)
         is_iceberg = ofi.get("is_iceberg_accumulation", False)
@@ -932,11 +934,14 @@ class AutoTrader:
         breadth_info = MarketScreener.get_market_breadth_regime()
         regime_max_slots = breadth_info.get("max_slots_cap", 6)
         min_rs_required = breadth_info.get("min_rs_required", 65)
+        breadth_pct = breadth_info.get("breadth_pct")
+        breadth_str = "不明" if breadth_pct is None else f"{breadth_pct}%"
+        breadth_label = breadth_info.get("regime_label", "不明")
         if regime_max_slots < effective_capacity:
             effective_capacity = regime_max_slots
-            logs.append(f"[{now_str}] 🛡️ 【市場ブレッドス退避シールド】200日線維持率: {breadth_info['breadth_pct']}% ({breadth_info['regime_label']}) ➔ 最大保有枠を {effective_capacity}銘柄 に自動縮小してキャッシュを温存します。")
+            logs.append(f"[{now_str}] 🛡️ 【市場ブレッドス退避シールド】200日線維持率: {breadth_str} ({breadth_label}) ➔ 最大保有枠を {effective_capacity}銘柄 に自動縮小してキャッシュを温存します。")
         else:
-            logs.append(f"[{now_str}] 📊 【市場ブレッドス判定】200日線維持率: {breadth_info['breadth_pct']}% ({breadth_info['regime_label']} / 要求RS順位: {min_rs_required}以上)")
+            logs.append(f"[{now_str}] 📊 【市場ブレッドス判定】200日線維持率: {breadth_str} ({breadth_label} / 要求RS順位: {min_rs_required}以上)")
 
         # Real broker API filter: Prioritize only open market equities
         if enforce_market_hours:
@@ -1138,6 +1143,8 @@ class AutoTrader:
                         f" 💎[深層OFIステルス買い: OFI {ofi_score:+.1f}]" if gate_mode == "SNIPER_STEALTH"
                         else (f" ⏱️[OFI待機タイムアウト執行]" if gate_mode == "TIMEOUT_EXEC" else f" ⚡[OFI正常: {ofi_score:+.1f}]")
                     )
+                    if not ofi_res.get("order_book_available", True) and gate_mode not in ("SNIPER_STEALTH", "TIMEOUT_EXEC"):
+                        ofi_tag = " [板情報なし: OFI未判定]"
 
                     res = broker_engine.place_order(
                         sym, "BUY", qty, price,
@@ -1267,6 +1274,11 @@ class AutoTrader:
                     continue
 
                 order_book = broker_engine.get_order_book(sym, depth=10)
+                if not order_book or order_book.get("available", True) is False:
+                    # 板読みのデイトレは、板が無ければ判定できない。理由を残して見送る。
+                    reason_ob = (order_book or {}).get("reason", "板情報なし")
+                    logs.append(f"[{now_str}] ⏭️ 【cisスナイパー見送り】{sym}: {reason_ob}")
+                    continue
                 setup = CisFlowSniper.evaluate_sniper_setup(sym, df_5m, order_book=order_book)
                 if setup.get("is_spoof_trap"):
                     logs.append(f"[{now_str}] 🕵️ 【cis深層OFI防衛】{sym}: {setup.get('reason')}")

@@ -286,6 +286,81 @@ class MarketScreener:
                 pass
         return False
 
+    # 仕様書 5.4「市場ブレッドス・キャッシュシールド」の値。
+    # 維持率 45% 未満で最大保有枠を 6 → 2 に縮小する。
+    BREADTH_DEFENSIVE_THRESHOLD_PCT = 45.0
+    BREADTH_NORMAL_SLOTS = 6
+    BREADTH_DEFENSIVE_SLOTS = 2
+    # RS の要求順位。仕様書にレジーム別の値は無いので、呼ぶ側（auto_trader）の既定値 65 を一律に返す。
+    BREADTH_MIN_RS_REQUIRED = 65
+    # 維持率を出すのに要る最小の銘柄数。これ未満なら「判定不能」。
+    BREADTH_MIN_SAMPLE = 10
+
+    @classmethod
+    def get_market_breadth_regime(cls) -> Dict[str, Any]:
+        """
+        監視銘柄の 200 日線維持率（株価 >= 200 日移動平均の銘柄の割合）からレジームを返す。
+
+        判定できない（価格か 200 日線が取れた銘柄が BREADTH_MIN_SAMPLE 未満）ときは、
+        breadth_pct=None、available=False とし、保有枠は守りの側（2 枠）に倒す。
+        """
+        symbols: List[str] = []
+        seen = set()
+        for item in cls.get_custom_watchlist():
+            sym = item.get("symbol")
+            if sym and sym not in seen:
+                seen.add(sym)
+                symbols.append(sym)
+        for items in cls.UNIVERSE.values():
+            for item in items:
+                sym = item.get("symbol")
+                if sym and sym not in seen:
+                    seen.add(sym)
+                    symbols.append(sym)
+
+        def _above_sma200(sym: str) -> Optional[bool]:
+            try:
+                data = MarketDataFeed.get_stock_data(sym)
+            except Exception:
+                return None
+            price = data.get("current_price")
+            sma_200 = (data.get("history_metrics") or {}).get("sma_200")
+            if not price or not sma_200:
+                return None
+            return float(price) >= float(sma_200)
+
+        results: List[Optional[bool]] = []
+        if symbols:
+            with ThreadPoolExecutor(max_workers=12) as executor:
+                results = list(executor.map(_above_sma200, symbols))
+
+        measured = [r for r in results if r is not None]
+        base = {
+            "universe_size": len(symbols),
+            "sample_size": len(measured),
+            "min_rs_required": cls.BREADTH_MIN_RS_REQUIRED,
+        }
+        if len(measured) < cls.BREADTH_MIN_SAMPLE:
+            return {
+                **base,
+                "available": False,
+                "breadth_pct": None,
+                "regime": "UNKNOWN",
+                "regime_label": f"判定不能（200日線を取れた銘柄 {len(measured)}/{len(symbols)}）",
+                "max_slots_cap": cls.BREADTH_DEFENSIVE_SLOTS,
+            }
+
+        breadth_pct = round(100.0 * sum(1 for r in measured if r) / len(measured), 1)
+        defensive = breadth_pct < cls.BREADTH_DEFENSIVE_THRESHOLD_PCT
+        return {
+            **base,
+            "available": True,
+            "breadth_pct": breadth_pct,
+            "regime": "DEFENSIVE" if defensive else "NORMAL",
+            "regime_label": "全面安・守り" if defensive else "通常",
+            "max_slots_cap": cls.BREADTH_DEFENSIVE_SLOTS if defensive else cls.BREADTH_NORMAL_SLOTS,
+        }
+
     @classmethod
     def scan_opportunities(
         cls, 

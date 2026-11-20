@@ -63,6 +63,22 @@ class BaseBrokerClient:
     def place_order(self, symbol: str, side: str, quantity: int, price: Optional[float] = None, order_type: str = "MARKET", notes: str = "", target_price: Optional[float] = None, stop_loss_price: Optional[float] = None) -> Dict[str, Any]:
         raise NotImplementedError
 
+    def get_order_book(self, symbol: str, depth: int = 10) -> Dict[str, Any]:
+        """
+        板情報を返す。板を取れるブローカーだけが上書きする。
+
+        既定は「板なし」。available=False を必ず付け、呼ぶ側が
+        「板が中立だった」と「板が無かった」を区別できるようにする。
+        """
+        return {
+            "available": False,
+            "symbol": symbol,
+            "bids": [],
+            "asks": [],
+            "ofi_analysis": {},
+            "reason": f"{type(self).__name__} は板情報を提供しない",
+        }
+
 
 class PaperTradingEngine(BaseBrokerClient):
     """
