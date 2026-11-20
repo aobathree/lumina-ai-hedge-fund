@@ -24,6 +24,8 @@ def clean(monkeypatch):
     lc._op_cache.clear()
     lc._op_failed_at.clear()
     lc._anthropic_clients.clear()
+    for k in lc.USAGE:
+        lc.USAGE[k] = 0
     yield
     lc._op_cache.clear()
     lc._op_failed_at.clear()
@@ -122,6 +124,7 @@ class FakeAnthropic:
                     raise raises
                 blocks = [SimpleNamespace(type="thinking", thinking=""), SimpleNamespace(type="text", text=text)] if text else []
                 return SimpleNamespace(content=blocks, stop_reason=stop_reason,
+                                       usage=SimpleNamespace(input_tokens=100, output_tokens=40, cache_read_input_tokens=0),
                                        stop_details=SimpleNamespace(category="cyber", explanation="x"))
             return SimpleNamespace(create=create)
 
@@ -242,3 +245,13 @@ def test_no_real_key_or_reference_is_committed():
     sample = (ROOT / ".env.op.sample").read_text(encoding="utf-8")
     assert "op://<vault>/<item>/credential" in sample and "sk-ant-" not in sample
     assert ".env.op" in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+
+def test_usage_is_accumulated(claude, monkeypatch):
+    import anthropic
+    lc.claude_generate("a")
+    lc.claude_generate("b")
+    monkeypatch.setattr(lc, "_anthropic_client", lambda: FakeAnthropic(raises=_status_error(anthropic.RateLimitError, 429)))
+    with pytest.raises(lc.LlmCallError):
+        lc.claude_generate("c")
+    assert lc.usage_snapshot() == {"calls": 2, "input_tokens": 200, "output_tokens": 80, "cache_read_input_tokens": 0, "errors": 1}
