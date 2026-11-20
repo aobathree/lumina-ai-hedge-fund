@@ -10,6 +10,8 @@
 
 ブローカーは LUMINA_BROKER で選ぶ（paper / webull_intents）。Webull の API は呼ばない。
 データは yfinance と FRED から取る。LLM の API キーが無いときは、合議は縮退モード（決定的な規則）で動く。
+LUMINA_JP_DATA_SOURCE=jquants のときは、東証の銘柄の日足・銘柄情報・財務・決算予定・配当を J-Quants から取る
+（鍵は JQUANTS_API_KEY、控えの置き場は LUMINA_JQ_DIR。既定 .trial/jq）。
 """
 import argparse
 import datetime
@@ -18,6 +20,13 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _jp_data_source() -> None:
+    if (os.getenv("LUMINA_JP_DATA_SOURCE") or "").strip().lower() == "jquants":
+        from core.ai_hedge_fund.jquants_source import install_yfinance_router
+        install_yfinance_router(os.getenv("LUMINA_JQ_DIR") or os.path.join(os.getcwd(), ".trial", "jq"))
+        print("東証の銘柄のデータ: J-Quants")
 
 
 def _broker():
@@ -76,6 +85,7 @@ def main() -> int:
     if not getattr(args, "func", None):
         ap.print_help()
         return 0
+    _jp_data_source()
     return args.func(args)
 
 

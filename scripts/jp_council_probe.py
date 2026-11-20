@@ -6,7 +6,7 @@ as-of の値で、指定の銘柄の合議（HedgeFundCouncil.run_council）だ�
 どの銘柄が合議に届くかが変わるので、届きうる銘柄の判定を先にまとめて見るための道具。
 
     op run --env-file .env.op -- .venv/bin/python scripts/jp_council_probe.py --asof 2026-11-19 \\
-        --session 2026-11-20T09:00 --jq .trial/jq/daily --out .trial/replay-20261120/council-claude 8001.T 6758.T
+        --session 2026-11-20T09:00 --jq .trial/jq --out .trial/replay-20261120/council-claude 8001.T 6758.T
 """
 import argparse
 import datetime as dt
@@ -25,7 +25,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--asof", required=True)
     ap.add_argument("--session", required=True)
-    ap.add_argument("--jq", required=True)
+    ap.add_argument("--jq", required=True, help="J-Quants の控えの置き場（scripts/jq_fetch.py の --out）")
     ap.add_argument("--snapshot", default="", help="yfinance の値の控えの置き場（jp_preopen.py と同じものを使う）")
     ap.add_argument("--out", required=True)
     ap.add_argument("symbols", nargs="+")
@@ -38,7 +38,7 @@ def main() -> int:
 
     session = dt.datetime.fromisoformat(args.session).replace(tzinfo=JST)
     from core.ai_hedge_fund import asof_replay
-    asof_replay.install(asof=dt.date.fromisoformat(args.asof), jq_dir=Path(args.jq),
+    asof_replay.install(asof=dt.date.fromisoformat(args.asof), jq_root=Path(args.jq),
                         news_cutoff=session.replace(hour=8, minute=0), session_now=session,
                         snapshot_dir=Path(args.snapshot) if args.snapshot else None)
 

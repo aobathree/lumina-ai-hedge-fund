@@ -58,6 +58,9 @@ def simulate(orders, trades, capital, day: dt.date, fee_bps: float = 0.0):
     for open_ms, _, o, code, tr in plan:
         price = tr[0][1]
         qty = int(o["quantity"])
+        if qty <= 0:
+            events.append({"time": hhmmss(open_ms), "code": code, "event": "数量 0（予算が 1 単元に届かない）", "price": price})
+            continue
         while qty > 0 and qty * price * (1 + fee) > cash:
             qty -= 100
         if qty <= 0:

@@ -8,7 +8,7 @@
 - 台帳は新しい paper 台帳（--capital の円だけ）。Webull の API も実際の証券会社も呼ばない
 
     .venv/bin/python scripts/jp_preopen.py --asof 2026-11-19 --session 2026-11-20T09:00 \\
-        --jq .trial/jq/daily --preopen .trial/brisk/20261120/preopen.json \\
+        --jq .trial/jq --preopen .trial/brisk/20261120/preopen.json \\
         --capital 15000000 --out .trial/replay-20261120/rules
 
 LLM を使うときは op run で ANTHROPIC_API_KEY を渡す（TRIAL.md）。--llm off（既定）は鍵を環境から外して縮退モードで回す。
@@ -69,7 +69,7 @@ def main() -> int:
     ap.add_argument("--asof", required=True, help="判断に使う最後の日（YYYY-MM-DD）")
     ap.add_argument("--session", required=True, help="注文を出す時刻（JST、YYYY-MM-DDTHH:MM）")
     ap.add_argument("--news-cutoff", help="これより前のニュースだけ使う（JST）。既定は --session の日の 08:00")
-    ap.add_argument("--jq", required=True)
+    ap.add_argument("--jq", required=True, help="J-Quants の控えの置き場（scripts/jq_fetch.py の --out）")
     ap.add_argument("--preopen", default="")
     ap.add_argument("--capital", type=float, default=15_000_000)
     ap.add_argument("--max-new-orders", type=int, default=6)
@@ -99,7 +99,7 @@ def main() -> int:
     asof = dt.date.fromisoformat(args.asof)
 
     from core.ai_hedge_fund import asof_replay
-    asof_replay.install(asof=asof, jq_dir=Path(args.jq), news_cutoff=cutoff, session_now=session,
+    asof_replay.install(asof=asof, jq_root=Path(args.jq), news_cutoff=cutoff, session_now=session,
                         snapshot_dir=Path(args.snapshot) if args.snapshot else None)
     asof_replay.set_screen_tiebreak(args.tiebreak)
 

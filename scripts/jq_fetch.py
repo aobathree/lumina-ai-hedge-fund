@@ -7,9 +7,14 @@ J-Quants（V2）の日足を、Lumina のスクリーナーの東証の銘柄に
     op run --env-file ~/kabs-local/n3/env -- .venv/bin/python scripts/jq_fetch.py \\
         --from 2025-11-01 --to 2026-11-19 --focus-from 2026-11-16 --out .trial/jq
 
-出力:
-    <out>/daily/<5 桁のコード>.json   銘柄ごとの日足（API の行のまま）。asof_replay が読む
-    <out>/focus_<from>_<to>.csv       --focus-from〜--to の日足の一覧（確認用）
+    # 財務・銘柄情報・バリュエーション・決算予定・配当も取る（--to を as-of の日として使う）
+    op run --env-file ~/kabs-local/n3/env -- .venv/bin/python scripts/jq_fetch.py \\
+        --from 2025-11-01 --to 2026-11-19 --focus-from 2026-11-16 --out .trial/jq --fundamentals
+
+出力（core/ai_hedge_fund/jquants_source.JQuantsStore の置き場。asof_replay と LUMINA_JP_DATA_SOURCE=jquants が読む）:
+    <out>/daily/<5 桁のコード>.json          日足（API の行のまま）
+    <out>/master|valuation|fins_summary|fins_details|earnings_date|dividend/<コード>.json   --fundamentals のとき
+    <out>/focus_<from>_<to>.csv              --focus-from〜--to の日足の一覧（確認用）
 """
 import argparse
 import csv
@@ -56,6 +61,7 @@ def main() -> int:
     ap.add_argument("--focus-from", required=True, help="一覧の CSV に出す期間の始まり")
     ap.add_argument("--out", default=".trial/jq")
     ap.add_argument("--codes", nargs="*", help="既定はスクリーナーの東証の銘柄すべて")
+    ap.add_argument("--fundamentals", action="store_true", help="財務・銘柄情報・バリュエーション・決算予定・配当も取る")
     args = ap.parse_args()
 
     key = os.environ.get("JQUANTS_API_KEY", "")
@@ -79,6 +85,13 @@ def main() -> int:
         print(f"{sym:8s} {code}  {len(rows):4d} 日  {rows[0]['Date'] if rows else '-'}〜{rows[-1]['Date'] if rows else '-'}"
               f"  調整係数≠1: {sum(1 for r in rows if r.get('AdjFactor') not in (1, 1.0))}")
         time.sleep(0.2)
+
+    if args.fundamentals:
+        import datetime as dt
+        from core.ai_hedge_fund.jquants_source import JQuantsStore, fetch_fundamentals
+        store = JQuantsStore(out, api_key=key)
+        codes = [jq_code(s if s.endswith(".T") else f"{s}.T") for s in symbols]
+        fetch_fundamentals(store, codes, dt.date.fromisoformat(args.to))
 
     cols = ["Date", "Code", "O", "H", "L", "C", "Vo", "Va", "AdjFactor", "AdjC"]
     path = out / f"focus_{args.focus_from}_{args.to}.csv"

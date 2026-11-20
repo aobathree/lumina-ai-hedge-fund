@@ -5,26 +5,23 @@
 フォークの各部品は yfinance から「いま」の値を取る。過去の日の寄前の判断を再現するには、
 その時点より後の値（当日の終値・当日のニュース）が入ってはいけない。この層は、同じプロセスの中で:
 
-- 東証の銘柄（``.T``）の日足を、J-Quants から取った日足（``asof`` の日まで）に差し替える
-- それ以外の銘柄（米国株・指数・為替）の日足は yfinance のまま、``asof`` の日より後を切り捨てる
-- ``Ticker.info`` の価格と、価格から決まる指標（PER・PBR・時価総額・配当利回り・52 週の高安）を ``asof`` の終値で計算し直す
-- 東証の銘柄の分足は返さない（J-Quants の日足しか持たない）
+- 東証の銘柄（``.T``）は、日足・銘柄情報・財務・決算の予定・配当・分割を J-Quants から、``asof`` の日までに
+  開示・公表された分だけで作る（``jquants_source.JQuantsTicker``）。J-Quants に無いもの（ニュース等）だけ yfinance
+- それ以外（米国株・指数・為替・VIX）は yfinance のまま、日足を ``asof`` の日で切り、``info`` の価格と
+  価格から決まる指標をその日の終値で置き直す
 - ニュースは ``news_cutoff`` より前に出た記事だけを残す
 - 立会の判定（MarketSession）を ``session_now`` の時刻の東証の立会中として答える
-
-財務諸表（``financials`` など）と決算の予定（``calendar``）は yfinance のまま渡す（公表済みの過去の値）。
 
 使い方::
 
     from core.ai_hedge_fund import asof_replay
-    asof_replay.install(asof=datetime.date(2026, 11, 19), jq_dir=Path(".trial/jq/daily"),
+    asof_replay.install(asof=datetime.date(2026, 11, 19), jq_root=Path(".trial/jq"),
                         news_cutoff=datetime.datetime(2026, 11, 20, 8, 0, tzinfo=JST))
 """
 from __future__ import annotations
 
 import datetime as dt
 import email.utils
-import json
 import re
 import threading
 from pathlib import Path
@@ -32,120 +29,40 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 
+from core.ai_hedge_fund.jquants_source import (
+    INTRADAY, PRICE_COLS, JQuantsStore, JQuantsTicker, empty_frame, jq_code, price_fields, resample_bars, slice_bars,
+)
+
 JST = dt.timezone(dt.timedelta(hours=9))
 
 _STATE: Dict[str, Any] = {"installed": False}
 _LOCK = threading.Lock()
 
-PRICE_COLS = ["Open", "High", "Low", "Close", "Volume"]
-INTRADAY = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
-
-
-# ---------------------------------------------------------------- J-Quants の日足
-
-
-def jq_code(symbol: str) -> Optional[str]:
-    """``7203.T`` → ``72030``（J-Quants の 5 桁のコード）。東証の銘柄でなければ None。"""
-    s = symbol.strip().upper()
-    if not s.endswith(".T"):
-        return None
-    base = s[:-2]
-    if len(base) == 4:
-        return base + "0"
-    return base
-
-
-def load_jq_bars(path: Path) -> pd.DataFrame:
-    """J-Quants の ``/v2/equities/bars/daily`` の行（JSON の配列）を yfinance の形の DataFrame にする。
-
-    値は分割の調整済み（``AdjO`` など）。index は東京時間 0 時の tz 付き日時（yfinance の日足と同じ形）。
-    """
-    rows = json.loads(Path(path).read_text(encoding="utf-8"))
-    recs = []
-    for r in rows:
-        if r.get("AdjC") is None:
-            continue  # 売買の無い日
-        recs.append({
-            "Date": pd.Timestamp(r["Date"]).tz_localize("Asia/Tokyo"),
-            "Open": float(r["AdjO"]),
-            "High": float(r["AdjH"]),
-            "Low": float(r["AdjL"]),
-            "Close": float(r["AdjC"]),
-            "Volume": float(r["AdjVo"] or 0.0),
-        })
-    df = pd.DataFrame.from_records(recs)
-    if df.empty:
-        return pd.DataFrame(columns=PRICE_COLS + ["Dividends", "Stock Splits"],
-                            index=pd.DatetimeIndex([], tz="Asia/Tokyo", name="Date"))
-    df = df.set_index("Date").sort_index()
-    df["Dividends"] = 0.0
-    df["Stock Splits"] = 0.0
-    return df
-
-
-def _period_start(end: pd.Timestamp, period: Optional[str]) -> Optional[pd.Timestamp]:
-    if not period or period == "max":
-        return None
-    if period == "ytd":
-        return pd.Timestamp(year=end.year, month=1, day=1, tz=end.tz)
-    m = re.fullmatch(r"(\d+)(d|wk|mo|y)", period)
-    if not m:
-        return None
-    n, unit = int(m.group(1)), m.group(2)
-    if unit == "d":
-        # yfinance の "5d" は営業日の本数。呼ぶ側で tail(n) する
-        return None
-    if unit == "wk":
-        return end - pd.Timedelta(weeks=n)
-    if unit == "mo":
-        return end - pd.DateOffset(months=n)
-    return end - pd.DateOffset(years=n)
-
-
-def _slice(df: pd.DataFrame, asof: dt.date, period: Optional[str], start=None, end=None) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
-    idx_dates = pd.Index([ts.date() for ts in df.index])
-    out = df[idx_dates <= asof]
-    if start is not None:
-        s = pd.Timestamp(start).date()
-        out = out[pd.Index([ts.date() for ts in out.index]) >= s]
-    if end is not None:
-        e = pd.Timestamp(end).date()  # yfinance の end は含まない
-        out = out[pd.Index([ts.date() for ts in out.index]) < e]
-    if start is None and end is None and period:
-        m = re.fullmatch(r"(\d+)d", period)
-        if m:
-            return out.tail(int(m.group(1)))
-        if not out.empty:
-            ps = _period_start(out.index[-1], period)
-            if ps is not None:
-                out = out[out.index > ps]
-    return out
-
-
-def _empty_like(tz: str = "Asia/Tokyo") -> pd.DataFrame:
-    return pd.DataFrame(columns=PRICE_COLS + ["Dividends", "Stock Splits"],
-                        index=pd.DatetimeIndex([], tz=tz, name="Datetime"))
+__all__ = ["install", "set_screen_tiebreak", "installed", "asof_date", "jp_symbols", "jq_code", "AsOfTicker",
+           "asof_download", "rewrite_info", "news_item_before_cutoff"]
 
 
 # ---------------------------------------------------------------- Ticker の差し替え
 
-_PRICE_INFO_KEYS = ("currentPrice", "regularMarketPrice", "previousClose", "regularMarketPreviousClose",
-                    "open", "regularMarketOpen", "dayHigh", "dayLow", "regularMarketDayHigh",
-                    "regularMarketDayLow", "volume", "regularMarketVolume")
+_PRICE_DEPENDENT = ("marketCap", "trailingPE", "forwardPE", "priceToBook", "dividendYield", "trailingAnnualDividendYield")
 
 
-class AsOfTicker:
-    """yfinance の ``Ticker`` を包み、``asof`` より後の値を見せない。"""
+def AsOfTicker(symbol: str, *args, **kwargs):
+    """``yf.Ticker`` の代わり。東証の銘柄は J-Quants、それ以外は yfinance を asof で切ったもの。"""
+    if jq_code(str(symbol)) is not None:
+        # J-Quants に無い属性（ニュース等）は、asof・締め切りで切る包みを通して yfinance に回す
+        return JQuantsTicker(str(symbol), _STATE["store"], _STATE["asof"], real_factory=ForeignAsOfTicker)
+    return ForeignAsOfTicker(symbol, *args, **kwargs)
+
+
+class ForeignAsOfTicker:
+    """東証以外の銘柄の yfinance の ``Ticker`` を包み、``asof`` より後の値を見せない。"""
 
     def __init__(self, symbol: str, *args, **kwargs):
         self._symbol = str(symbol)
         self._real = _STATE["real_ticker"](symbol, *args, **kwargs)
         self._info: Optional[Dict[str, Any]] = None
 
-    # yfinance の属性で、ここで扱わないものはそのまま渡す（財務諸表・決算の予定など）。
-    # 控えの置き場（snapshot_dir）があれば、財務諸表などは最初に取れた値を控えて使い回す。
     def __getattr__(self, name: str):
         if name.startswith("_"):
             raise AttributeError(name)
@@ -158,9 +75,6 @@ class AsOfTicker:
         return self._symbol
 
     def _daily(self) -> pd.DataFrame:
-        code = jq_code(self._symbol)
-        if code is not None:
-            return _jq_frame(code)
         with _LOCK:
             cache = _STATE["foreign_cache"]
             if self._symbol not in cache:
@@ -168,53 +82,38 @@ class AsOfTicker:
                     cache[self._symbol] = _snapshot(self._symbol, "history_2y",
                                                     lambda: self._real.history(period="2y", auto_adjust=True))
                 except Exception:
-                    cache[self._symbol] = _empty_like("UTC")
+                    cache[self._symbol] = empty_frame("UTC")
             return cache[self._symbol]
 
     def history(self, period: Optional[str] = "1mo", interval: str = "1d", start=None, end=None, **kwargs) -> pd.DataFrame:
         asof: dt.date = _STATE["asof"]
         if interval in INTRADAY:
-            if jq_code(self._symbol) is not None:
-                return _empty_like()
             try:
                 df = self._real.history(period=period, interval=interval, start=start, end=end, **kwargs)
             except Exception:
-                return _empty_like("UTC")
+                return empty_frame("UTC")
             if df is None or df.empty:
                 return df
             return df[pd.Index([ts.date() for ts in df.index]) <= asof]
-        if interval not in ("1d", "1D"):
-            daily = _slice(self._daily(), asof, period, start, end)
-            rule = {"1wk": "W", "1mo": "ME"}.get(interval)
-            if rule is None or daily.empty:
-                return daily
-            agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum",
-                   "Dividends": "sum", "Stock Splits": "sum"}
-            return daily.resample(rule).agg({k: v for k, v in agg.items() if k in daily.columns}).dropna(subset=["Close"])
-        return _slice(self._daily(), asof, period, start, end).copy()
+        daily = slice_bars(self._daily(), asof, period, start, end).copy()
+        return daily if interval in ("1d", "1D") else resample_bars(daily, interval)
 
     @property
     def info(self) -> Dict[str, Any]:
-        if self._info is not None:
-            return self._info
-        try:
-            real = dict(_snapshot(self._symbol, "info", lambda: self._real.info) or {})
-        except Exception:
-            real = {}
-        self._info = rewrite_info(real, self._daily(), _STATE["asof"])
+        if self._info is None:
+            try:
+                real = dict(_snapshot(self._symbol, "info", lambda: self._real.info) or {})
+            except Exception:
+                real = {}
+            self._info = rewrite_info(real, self._daily(), _STATE["asof"])
         return self._info
 
     @property
     def fast_info(self) -> Dict[str, Any]:
         inf = self.info
-        return {
-            "last_price": inf.get("currentPrice"),
-            "lastPrice": inf.get("currentPrice"),
-            "previous_close": inf.get("previousClose"),
-            "previousClose": inf.get("previousClose"),
-            "currency": inf.get("currency"),
-            "market_cap": inf.get("marketCap"),
-        }
+        return {"last_price": inf.get("currentPrice"), "lastPrice": inf.get("currentPrice"),
+                "previous_close": inf.get("previousClose"), "previousClose": inf.get("previousClose"),
+                "currency": inf.get("currency"), "market_cap": inf.get("marketCap")}
 
     @property
     def news(self) -> List[Dict[str, Any]]:
@@ -231,13 +130,6 @@ class AsOfTicker:
     @property
     def splits(self) -> pd.Series:
         return _cut_series(_snapshot(self._symbol, "splits", lambda: self._real.splits))
-
-    @property
-    def actions(self) -> pd.DataFrame:
-        a = self._real.actions
-        if a is None or len(a) == 0:
-            return a
-        return a[pd.Index([ts.date() for ts in a.index]) <= _STATE["asof"]]
 
 
 SNAPSHOT_ATTRS = {
@@ -280,8 +172,6 @@ def _snapshot(symbol: str, name: str, fetch):
         with open(tmp, "wb") as f:
             pickle.dump(value, f)
         tmp.replace(path)
-        _STATE.setdefault("snapshot_writes", 0)
-        _STATE["snapshot_writes"] += 1
     return value
 
 
@@ -292,38 +182,21 @@ def _cut_series(s):
 
 
 def rewrite_info(real: Dict[str, Any], daily: pd.DataFrame, asof: dt.date) -> Dict[str, Any]:
-    """``info`` の価格と、価格から決まる指標を ``asof`` の終値で置き直す。
+    """東証以外の ``info`` の価格と、価格から決まる指標を ``asof`` の終値で置き直す。
 
     日足が無ければ価格の項目を消す（いまの値を残さない）。
     """
     info = dict(real)
-    bars = _slice(daily, asof, None) if daily is not None else None
-    if bars is None or bars.empty:
-        for k in _PRICE_INFO_KEYS + ("marketCap", "trailingPE", "forwardPE", "priceToBook",
-                                     "fiftyTwoWeekHigh", "fiftyTwoWeekLow", "dividendYield"):
+    bars = slice_bars(daily, asof, None) if daily is not None else None
+    px = price_fields(bars) if bars is not None else {}
+    if not px:
+        for k in ("currentPrice", "regularMarketPrice", "previousClose", "regularMarketPreviousClose", "open",
+                  "regularMarketOpen", "dayHigh", "dayLow", "fiftyTwoWeekHigh", "fiftyTwoWeekLow") + _PRICE_DEPENDENT:
             info.pop(k, None)
         return info
-    last = bars.iloc[-1]
-    close = float(last["Close"])
-    prev = float(bars["Close"].iloc[-2]) if len(bars) >= 2 else None
+    close = px["currentPrice"]
     live_price = real.get("currentPrice") or real.get("regularMarketPrice")
-    info.update({
-        "currentPrice": close,
-        "regularMarketPrice": close,
-        "previousClose": prev,
-        "regularMarketPreviousClose": prev,
-        "open": float(last["Open"]),
-        "regularMarketOpen": float(last["Open"]),
-        "dayHigh": float(last["High"]),
-        "dayLow": float(last["Low"]),
-        "regularMarketDayHigh": float(last["High"]),
-        "regularMarketDayLow": float(last["Low"]),
-        "volume": float(last["Volume"]),
-        "regularMarketVolume": float(last["Volume"]),
-    })
-    year = bars[bars.index > bars.index[-1] - pd.DateOffset(years=1)]
-    info["fiftyTwoWeekHigh"] = float(year["High"].max())
-    info["fiftyTwoWeekLow"] = float(year["Low"].min())
+    info.update(px)
     if real.get("trailingEps"):
         info["trailingPE"] = close / float(real["trailingEps"]) if float(real["trailingEps"]) > 0 else None
     if real.get("forwardEps"):
@@ -339,15 +212,6 @@ def rewrite_info(real: Dict[str, Any], daily: pd.DataFrame, asof: dt.date) -> Di
                 info[k] = float(real[k]) / ratio
     info["_asof"] = asof.isoformat()
     return info
-
-
-def _jq_frame(code: str) -> pd.DataFrame:
-    with _LOCK:
-        cache = _STATE["jq_cache"]
-        if code not in cache:
-            path = Path(_STATE["jq_dir"]) / f"{code}.json"
-            cache[code] = load_jq_bars(path) if path.exists() else _empty_like()
-        return cache[code]
 
 
 # ---------------------------------------------------------------- download の差し替え
@@ -414,12 +278,14 @@ def _yf_news_before_cutoff(n: Dict[str, Any]) -> bool:
 # ---------------------------------------------------------------- install
 
 
-def install(asof: dt.date, jq_dir: Path, news_cutoff: dt.datetime,
-            session_now: Optional[dt.datetime] = None, snapshot_dir: Optional[Path] = None) -> None:
+def install(asof: dt.date, jq_root: Path, news_cutoff: dt.datetime,
+            session_now: Optional[dt.datetime] = None, snapshot_dir: Optional[Path] = None,
+            fetch_missing: bool = False) -> None:
     """同じプロセスの yfinance・ニュース・立会の判定を、as-of の値に差し替える。
 
-    ``snapshot_dir`` を渡すと、yfinance の info・財務諸表・東証以外の日足を控え、次の実行から使い回す
-    （何度も回すと yfinance の取得の制限に当たり、財務が欠けて結果が変わるため）。
+    ``jq_root`` は J-Quants の控えの置き場（``jquants_source.JQuantsStore``、``scripts/jq_fetch.py`` が作る）。
+    ``fetch_missing`` が真なら、控えに無い銘柄を J-Quants から取りに行く（鍵が要る）。
+    ``snapshot_dir`` を渡すと、東証以外の yfinance の値を控え、次の実行から使い回す。
     """
     import yfinance as yf
 
@@ -428,10 +294,9 @@ def install(asof: dt.date, jq_dir: Path, news_cutoff: dt.datetime,
     _STATE.update({
         "installed": True,
         "asof": asof,
-        "jq_dir": Path(jq_dir),
+        "store": JQuantsStore(Path(jq_root), fetch=fetch_missing),
         "news_cutoff": news_cutoff,
         "session_now": session_now or dt.datetime.combine(asof + dt.timedelta(days=1), dt.time(9, 0), JST),
-        "jq_cache": {},
         "foreign_cache": {},
         "snapshot_dir": Path(snapshot_dir) if snapshot_dir else None,
         "real_ticker": yf.Ticker,
