@@ -64,6 +64,30 @@ def build_broker(db_path: str, preopen_path: str):
     return ReplayBroker(db_path=db_path)
 
 
+def install_council_cache(path: Path, calls: list) -> None:
+    """合議（HedgeFundCouncil.run_council）を、保存した判定を返すものに替える。
+
+    同じ判定で、スクリーナーの同点の並びだけを変えて比べるため（Claude の判定は呼ぶたびに揺れうる）。
+    控えに無い銘柄は HOLD（0 点）にし、calls に「控えなし」として残す。
+    """
+    from core.ai_hedge_fund.hedge_fund_council import HedgeFundCouncil
+
+    saved = json.loads(path.read_text(encoding="utf-8")).get("results", {})
+
+    def _run(cls, symbol, *a, **k):
+        r = saved.get(symbol)
+        calls.append({"symbol": symbol, "cached": r is not None})
+        if r is None:
+            return {"verdict": {"action": "HOLD", "action_label": "合議の控えなし", "confidence_score": 0},
+                    "currency": "JPY", "current_price": None}
+        return {"verdict": r.get("verdict") or {k2: r.get(k2) for k2 in ("action", "action_label", "confidence_score",
+                                                                            "target_price", "stop_loss_price", "allocation_pct",
+                                                                            "thesis_summary")},
+                "currency": r.get("currency", "JPY"), "current_price": r.get("current_price")}
+
+    HedgeFundCouncil.run_council = classmethod(_run)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--asof", required=True, help="判断に使う最後の日（YYYY-MM-DD）")
@@ -77,6 +101,9 @@ def main() -> int:
     ap.add_argument("--llm", choices=["off", "on"], default="off")
     ap.add_argument("--tiebreak", default="universe",
                     help="スクリーナーの同点の並び: universe（既定。逐次に評価した順）/ asis（フォークのまま）/ shuffle:<seed>")
+    ap.add_argument("--foreign-asof", help="東証以外（米国株・指数・VIX・為替・FRED）の as-of の日。既定は --asof")
+    ap.add_argument("--council-cache", default="",
+                    help="jp_council_probe.py の council.json。合議を呼ばず、その判定を返す（無い銘柄は HOLD にして記録する）")
     ap.add_argument("--snapshot", default="", help="yfinance の値の控えの置き場（同じ日を何度も回すときに使う）")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
@@ -100,8 +127,12 @@ def main() -> int:
 
     from core.ai_hedge_fund import asof_replay
     asof_replay.install(asof=asof, jq_root=Path(args.jq), news_cutoff=cutoff, session_now=session,
-                        snapshot_dir=Path(args.snapshot) if args.snapshot else None)
+                        snapshot_dir=Path(args.snapshot) if args.snapshot else None,
+                        foreign_asof=dt.date.fromisoformat(args.foreign_asof) if args.foreign_asof else None)
     asof_replay.set_screen_tiebreak(args.tiebreak)
+    council_calls = []
+    if args.council_cache:
+        install_council_cache(Path(args.council_cache), council_calls)
 
     from core.ai_hedge_fund import llm_client
     from core.ai_hedge_fund.auto_trader import AutoTrader
@@ -127,6 +158,9 @@ def main() -> int:
         "news_cutoff": cutoff.isoformat(),
         "capital_jpy": args.capital,
         "tiebreak": args.tiebreak,
+        "foreign_asof": args.foreign_asof or args.asof,
+        "council_cache": args.council_cache or None,
+        "council_calls": council_calls,
         "snapshot": args.snapshot or None,
         "llm": llm,
         "seconds": round(took, 1),

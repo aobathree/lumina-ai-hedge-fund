@@ -118,6 +118,7 @@ def state(jq_root):
     ar._STATE.update({
         "installed": True, "asof": ASOF, "store": jqs.JQuantsStore(jq_root, fetch=False),
         "news_cutoff": dt.datetime(2026, 11, 20, 8, 0, tzinfo=JST), "foreign_cache": {}, "real_ticker": _FakeReal,
+        "foreign_asof": ASOF,
     })
     yield jq_root
     ar._STATE.clear()
@@ -267,3 +268,82 @@ def test_snapshot_keeps_first_good_value(state, tmp_path):
     assert ar._snapshot("AAPL", "financials", good)["a"].iloc[0] == 1
     assert ar._snapshot("AAPL", "financials", empty)["a"].iloc[0] == 1  # 控えを使い、取りに行かない
     assert calls == ["empty", "good"]
+
+
+def test_sim_patrol_half_profit_then_breakeven_across_days():
+    sim = _sim()
+    d1, d2 = dt.date(2026, 11, 16), dt.date(2026, 11, 17)
+    t = lambda d, h, m: sim.ms_at(d, h, m)
+    trades = {"1111": [
+        [t(d1, 9, 0), 1000.0, 1, ""], [t(d1, 9, 10), 1050.0, 1, ""],
+        [t(d1, 10, 5), 1110.0, 1, ""],   # 10:15 の見回りで +11% → 半分利確、逆指値を買値へ
+        [t(d1, 15, 30), 1080.0, 1, ""],
+        [t(d2, 9, 0), 995.0, 1, ""],     # 翌日 09:15: 高値 +11% から -10% → トレイリング（フォークは建値撤退より先に判定する）
+        [t(d2, 15, 30), 1200.0, 1, ""],
+    ]}
+    order = [{"symbol": "1111.T", "quantity": 1000, "target_price": 1300.0, "stop_loss_price": 900.0}]
+    cash, pos, _ = sim.simulate(order, trades, 2_000_000, d2, exit_mode="patrol", days=[d1, d2])
+    fills = [(f[1], f[2], f[3]) for f in pos[0]["fills"]]
+    assert fills == [(500, 1110.0, "+10% 半分利確"), (500, 995.0, "トレイリング")]
+    assert cash == 2_000_000 + 500 * 110 - 500 * 5
+    rows = sim.timeline(pos, trades, 2_000_000, d2, days=[d1, d2])
+    closes = [r for r in rows if r["time"].endswith("15:30")]
+    assert [r["time"] for r in closes] == ["11-16 15:30", "11-17 15:30"]
+    assert closes[0]["equity"] == 2_000_000 + 500 * 110 + 500 * 80  # 半分は 1110 で売り、残りは引け 1080
+    assert closes[-1]["equity"] == cash
+
+
+def test_sim_hold_keeps_until_last_close():
+    sim = _sim()
+    d1, d2 = dt.date(2026, 11, 16), dt.date(2026, 11, 17)
+    trades = {"1111": [[sim.ms_at(d1, 9, 0), 1000.0, 1, ""], [sim.ms_at(d1, 9, 5), 500.0, 1, ""],
+                       [sim.ms_at(d2, 15, 30), 1100.0, 1, ""]]}
+    order = [{"symbol": "1111.T", "quantity": 100, "stop_loss_price": 900.0}]
+    cash, pos, _ = sim.simulate(order, trades, 200_000, d2, exit_mode="hold", days=[d1, d2])
+    assert pos[0]["reason"] == "大引け" and cash == 200_000 + 100 * 100
+
+
+def test_fred_cut_respects_release_lag():
+    df = pd.DataFrame({"observation_date": ["2026-11-04", "2026-11-11", "2026-11-18"], "WALCL": [1, 2, 3]})
+    assert list(ar.fred_cut(df, "WALCL", dt.date(2026, 11, 12))["WALCL"]) == [1, 2]  # 11-11 の値は 11-12 に公表
+    assert list(ar.fred_cut(df, "WALCL", dt.date(2026, 11, 11))["WALCL"]) == [1]
+    rrp = pd.DataFrame({"observation_date": ["2026-11-12", "2026-11-13"], "RRPONTSYD": [5, 6]})
+    assert list(ar.fred_cut(rrp, "RRPONTSYD", dt.date(2026, 11, 12))["RRPONTSYD"]) == [5]
+
+
+def test_foreign_asof_options_and_insider(state):
+    ar._STATE["foreign_asof"] = dt.date(2026, 11, 18)
+    us = ar.AsOfTicker("AAPL")
+    assert us.history(period="5d").index[-1].date() == dt.date(2026, 11, 18)
+    assert us.options == ()
+    with pytest.raises(RuntimeError):
+        us.option_chain("2026-12-18")
+    us._real.insider_transactions = pd.DataFrame({"Start Date": ["2026-11-10", "2026-11-19"], "Shares": [1, 2]})
+    assert list(us.insider_transactions["Shares"]) == [1]
+    assert us.insider_purchases.empty
+
+
+def test_bars_use_the_share_basis_of_the_asof_day(jq_root):
+    rows = [_bar("2026-11-13", 100.0), _bar("2026-11-19", 100.0, factor=0.2)]  # 11-19 に 1:5 の分割
+    rows[0].update({"AdjO": 20.0, "AdjH": 20.0, "AdjL": 20.0, "AdjC": 20.0})    # 遡って 1/5 に調整された値
+    assert float(jqs.bars_frame(rows, dt.date(2026, 11, 13))["Close"].iloc[0]) == 100.0  # 11-13 の水準（分割前）
+    assert float(jqs.bars_frame(rows, dt.date(2026, 11, 19))["Close"].iloc[0]) == 20.0   # 分割後に見れば調整済み
+
+
+def test_sim_split_mid_period(tmp_path):
+    sim = _sim()
+    (tmp_path / "daily").mkdir()
+    (tmp_path / "daily" / "11110.json").write_text(json.dumps([
+        {"Date": "2026-11-16", "AdjFactor": 1.0}, {"Date": "2026-11-17", "AdjFactor": 0.2}]))
+    paths = []
+    for d, px in (("20261116", 1000.0), ("20261117", 210.0)):
+        p = tmp_path / f"{d}.json"
+        day = dt.datetime.strptime(d, "%Y%m%d").date()
+        p.write_text(json.dumps({"trading_date": d, "codes": {"1111": [[sim.ms_at(day, 9, 0), px, 1, ""],
+                                                                       [sim.ms_at(day, 15, 30), px, 1, ""]]}}))
+        paths.append(p)
+    days, trades, factors = sim.load_trades(paths, tmp_path)
+    assert trades["1111"][-1][1] == pytest.approx(1050.0)  # 210 円 × 5 = 分割前の水準で 1,050 円
+    cash, pos, _ = sim.simulate([{"symbol": "1111.T", "quantity": 100}], trades, 200_000, days[-1],
+                                exit_mode="hold", days=days)
+    assert cash == pytest.approx(200_000 + 100 * 50)

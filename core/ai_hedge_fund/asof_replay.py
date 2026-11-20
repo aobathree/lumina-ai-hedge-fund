@@ -86,7 +86,7 @@ class ForeignAsOfTicker:
             return cache[self._symbol]
 
     def history(self, period: Optional[str] = "1mo", interval: str = "1d", start=None, end=None, **kwargs) -> pd.DataFrame:
-        asof: dt.date = _STATE["asof"]
+        asof: dt.date = _STATE["foreign_asof"]
         if interval in INTRADAY:
             try:
                 df = self._real.history(period=period, interval=interval, start=start, end=end, **kwargs)
@@ -105,7 +105,7 @@ class ForeignAsOfTicker:
                 real = dict(_snapshot(self._symbol, "info", lambda: self._real.info) or {})
             except Exception:
                 real = {}
-            self._info = rewrite_info(real, self._daily(), _STATE["asof"])
+            self._info = rewrite_info(real, self._daily(), _STATE["foreign_asof"])
         return self._info
 
     @property
@@ -123,6 +123,28 @@ class ForeignAsOfTicker:
             return []
         return [n for n in items if _yf_news_before_cutoff(n)]
 
+    # オプションの板は過去の値が取れない（いま取れるのは最新の板）。as-of では無いものとして扱う。
+    # フォークの GEX は取れないとき VIX で代える（get_market_turbulence_warning）
+    @property
+    def options(self):
+        return ()
+
+    def option_chain(self, *args, **kwargs):
+        raise RuntimeError("as-of の再生ではオプションの板を使わない")
+
+    @property
+    def insider_transactions(self) -> pd.DataFrame:
+        """取引日（Start Date）が as-of の日までの明細だけ。"""
+        df = _snapshot(self._symbol, "insider_transactions", lambda: self._real.insider_transactions)
+        if df is None or getattr(df, "empty", True) or "Start Date" not in df.columns:
+            return pd.DataFrame()
+        dates = pd.to_datetime(df["Start Date"], errors="coerce")
+        return df[dates.dt.date <= _STATE["foreign_asof"]]
+
+    @property
+    def insider_purchases(self) -> pd.DataFrame:
+        return pd.DataFrame()  # 直近 6 か月の集計表は日付で切れないので使わない
+
     @property
     def dividends(self) -> pd.Series:
         return _cut_series(_snapshot(self._symbol, "dividends", lambda: self._real.dividends))
@@ -136,8 +158,22 @@ SNAPSHOT_ATTRS = {
     "financials", "quarterly_financials", "income_stmt", "quarterly_income_stmt",
     "balance_sheet", "quarterly_balance_sheet", "balancesheet", "quarterly_balancesheet",
     "cashflow", "quarterly_cashflow", "cash_flow", "quarterly_cash_flow",
-    "calendar", "earnings_dates", "insider_transactions", "insider_purchases",
+    "calendar", "earnings_dates",
 }
+
+# FRED の系列ごとの公表の遅れ（観測日 + 日数 ≦ 東証以外の as-of の日 の行だけ使う）。
+# WALCL・WTREGEN は水曜の値を木曜（米国時間）に公表、RRP はその日のうちに公表
+FRED_RELEASE_LAG_DAYS = {"WALCL": 1, "WTREGEN": 1, "RRPONTSYD": 0}
+
+
+def fred_cut(df: pd.DataFrame, series: str, asof: dt.date) -> pd.DataFrame:
+    """FRED の CSV（fredgraph.csv）を、as-of の日に公表済みの行だけにする。"""
+    if df is None or df.empty:
+        return df
+    date_col = "observation_date" if "observation_date" in df.columns else ("DATE" if "DATE" in df.columns else df.columns[0])
+    lag = FRED_RELEASE_LAG_DAYS.get(series, 1)
+    obs = pd.to_datetime(df[date_col], errors="coerce").dt.date
+    return df[obs.map(lambda d: d is not None and not pd.isna(d) and d + dt.timedelta(days=lag) <= asof)].reset_index(drop=True)
 
 
 def _is_empty(v) -> bool:
@@ -178,7 +214,7 @@ def _snapshot(symbol: str, name: str, fetch):
 def _cut_series(s):
     if s is None or len(s) == 0:
         return s
-    return s[pd.Index([ts.date() for ts in s.index]) <= _STATE["asof"]]
+    return s[pd.Index([ts.date() for ts in s.index]) <= _STATE["foreign_asof"]]
 
 
 def rewrite_info(real: Dict[str, Any], daily: pd.DataFrame, asof: dt.date) -> Dict[str, Any]:
@@ -280,12 +316,14 @@ def _yf_news_before_cutoff(n: Dict[str, Any]) -> bool:
 
 def install(asof: dt.date, jq_root: Path, news_cutoff: dt.datetime,
             session_now: Optional[dt.datetime] = None, snapshot_dir: Optional[Path] = None,
-            fetch_missing: bool = False) -> None:
+            fetch_missing: bool = False, foreign_asof: Optional[dt.date] = None) -> None:
     """同じプロセスの yfinance・ニュース・立会の判定を、as-of の値に差し替える。
 
     ``jq_root`` は J-Quants の控えの置き場（``jquants_source.JQuantsStore``、``scripts/jq_fetch.py`` が作る）。
     ``fetch_missing`` が真なら、控えに無い銘柄を J-Quants から取りに行く（鍵が要る）。
     ``snapshot_dir`` を渡すと、東証以外の yfinance の値を控え、次の実行から使い回す。
+    ``foreign_asof`` は東証以外（米国株・指数・VIX・為替・FRED）の as-of の日。既定は ``asof`` と同じ。
+    日本の大引け後に判断するときは、その日の米国の立会はまだなので前日にする。
     """
     import yfinance as yf
 
@@ -294,6 +332,7 @@ def install(asof: dt.date, jq_root: Path, news_cutoff: dt.datetime,
     _STATE.update({
         "installed": True,
         "asof": asof,
+        "foreign_asof": foreign_asof or asof,
         "store": JQuantsStore(Path(jq_root), fetch=fetch_missing),
         "news_cutoff": news_cutoff,
         "session_now": session_now or dt.datetime.combine(asof + dt.timedelta(days=1), dt.time(9, 0), JST),
@@ -321,6 +360,46 @@ def install(asof: dt.date, jq_root: Path, news_cutoff: dt.datetime,
             return [i for i in items if news_item_before_cutoff(i)][:limit]
         NewsFeed._extract_yfinance_news = classmethod(_yfn)
     NewsFeed._cache.clear()
+
+    # FRED: 公表済みの行だけ（macro_liquidity_feed は pd.read_csv で fredgraph.csv を読む）
+    from core.ai_hedge_fund import macro_liquidity_feed as mlf
+    import types
+
+    real_read_csv = pd.read_csv
+
+    def _read_csv(src, *a, **k):
+        df = real_read_csv(src, *a, **k)
+        m = re.search(r"fredgraph\.csv\?id=([A-Z0-9]+)", str(src))
+        return fred_cut(df, m.group(1), _STATE["foreign_asof"]) if m else df
+
+    shim = types.ModuleType("pandas_asof")
+    shim.__dict__.update({k: getattr(pd, k) for k in dir(pd) if not k.startswith("__")})
+    shim.read_csv = _read_csv
+    mlf.pd = shim
+    mlf.MacroLiquidityFeed._cache.clear()
+
+    from core.ai_hedge_fund.market_data_feed import MarketDataFeed
+
+    def _earnings_calendar(cls, symbol):
+        """フォークの get_earnings_calendar と同じ判定を、「今日」= 注文の日で行う。"""
+        today = _STATE["session_now"].date()
+        try:
+            cal = AsOfTicker(cls.normalize_symbol(symbol)).calendar
+            dates = cal.get("Earnings Date") if isinstance(cal, dict) else None
+            if dates:
+                d = dates[0] if isinstance(dates[0], dt.date) else None
+                if isinstance(dates[0], dt.datetime):
+                    d = dates[0].date()
+                if d is not None:
+                    days = (d - today).days
+                    near = 0 <= days <= 3
+                    return {"earnings_date": d.strftime("%Y-%m-%d"), "days_remaining": days,
+                            "is_near_earnings": near, "status": "NEAR_EARNINGS_RISK" if near else "OK"}
+        except Exception:
+            pass
+        return {"earnings_date": None, "days_remaining": None, "is_near_earnings": False, "status": "UNKNOWN"}
+
+    MarketDataFeed.get_earnings_calendar = classmethod(_earnings_calendar)
 
     from core.ai_hedge_fund.market_session import MarketSession
 

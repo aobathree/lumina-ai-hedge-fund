@@ -304,7 +304,11 @@ def _same_period_growth(rows: List[Dict[str, Any]], asof: Optional[dt.date], fie
 def build_info(store: JQuantsStore, code: str, asof: Optional[dt.date], close: Optional[float]) -> Dict[str, Any]:
     """yfinance の ``info`` の形で、J-Quants から作れる項目を返す（価格は呼ぶ側が日足から足す）。"""
     info: Dict[str, Any] = {"currency": "JPY", "quoteType": "EQUITY", "_source": "J-Quants"}
-    master = [r for r in store.rows("master", code) if asof is None or (_date(r.get("Date")) or dt.date.min) <= asof + dt.timedelta(days=3)]
+    all_master = store.rows("master", code)
+    master = [r for r in all_master if asof is None or (_date(r.get("Date")) or dt.date.min) <= asof + dt.timedelta(days=3)]
+    if not master and all_master:
+        # 社名・業種はめったに変わらないので、as-of より後の行しか無ければ最も古い行を使う
+        master = [min(all_master, key=lambda r: r.get("Date", ""))]
     if master:
         m = max(master, key=lambda r: r.get("Date", ""))
         info.update({"longName": m.get("CoName"), "shortName": m.get("CoName"), "longNameEn": m.get("CoNameEn"),
@@ -425,15 +429,25 @@ PRICE_COLS = ["Open", "High", "Low", "Close", "Volume"]
 INTRADAY = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
 
 
-def bars_frame(rows: List[Dict[str, Any]]) -> pd.DataFrame:
-    """``/equities/bars/daily`` の行を yfinance の日足の形にする（分割の調整済み、東京時間 0 時の tz 付き）。"""
+def bars_frame(rows: List[Dict[str, Any]], asof: Optional[dt.date] = None) -> pd.DataFrame:
+    """``/equities/bars/daily`` の行を yfinance の日足の形にする（東京時間 0 時の tz 付き）。
+
+    ``Adj*`` は最新の株数の水準に遡って調整されている。``asof`` を渡すと、asof より後の分割・併合を戻し、
+    **asof の日の株数の水準**にする（その日の EPS・BPS・配当と同じ水準。後の分割を先に知らない）。
+    """
+    later = 1.0
+    if asof is not None:
+        for r in rows:
+            d, f = _date(r.get("Date")), _num(r.get("AdjFactor"))
+            if d and f and d > asof and abs(f - 1.0) > 1e-9:
+                later *= f
     recs = []
     for r in rows:
         if r.get("AdjC") is None:
             continue  # 売買の無い日
         recs.append({"Date": pd.Timestamp(r["Date"]).tz_localize("Asia/Tokyo"),
-                     "Open": float(r["AdjO"]), "High": float(r["AdjH"]), "Low": float(r["AdjL"]),
-                     "Close": float(r["AdjC"]), "Volume": float(r.get("AdjVo") or 0.0)})
+                     "Open": float(r["AdjO"]) / later, "High": float(r["AdjH"]) / later, "Low": float(r["AdjL"]) / later,
+                     "Close": float(r["AdjC"]) / later, "Volume": float(r.get("AdjVo") or 0.0) * later})
     if not recs:
         return empty_frame()
     df = pd.DataFrame.from_records(recs).set_index("Date").sort_index()
@@ -552,7 +566,7 @@ class JQuantsTicker:
         return getattr(self._real_ticker(), name)
 
     def _bars(self) -> pd.DataFrame:
-        return bars_frame(self._store.rows("daily", self._code))
+        return bars_frame(self._store.rows("daily", self._code), self._asof)
 
     def history(self, period: Optional[str] = "1mo", interval: str = "1d", start=None, end=None, **kwargs) -> pd.DataFrame:
         if interval in INTRADAY:
