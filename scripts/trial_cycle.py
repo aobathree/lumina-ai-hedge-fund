@@ -8,8 +8,12 @@
     python scripts/trial_cycle.py run --ignore-hours  # 立会の外でも、スクリーニングと合議まで通す
     python scripts/trial_cycle.py status              # 台帳の残高と建玉、今日の意図の数
 
-ブローカーは LUMINA_BROKER で選ぶ（paper / webull_intents）。Webull の API は呼ばない。
+ブローカーは LUMINA_BROKER で選ぶ（paper / webull_intents / webull_jp_cash）。Webull の API は呼ばない。
 データは yfinance と FRED から取る。LLM の API キーが無いときは、合議は縮退モード（決定的な規則）で動く。
+市場データの取り先は core/ai_hedge_fund/data_sources.py が銘柄ごとに決める（LUMINA_DATA_SOURCES=auto が既定）:
+東証は J-Quants（JQUANTS_API_KEY、控え LUMINA_JQ_DIR）、米国の株・ETF の日足は Alpaca（ALPACA_API_KEY_ID /
+ALPACA_API_SECRET_KEY、控え LUMINA_ALPACA_DIR）、指数・為替と、鍵も控えも無いときは yfinance。
+LUMINA_DATA_SOURCES=yfinance で従来どおり yfinance だけにする。
 """
 import argparse
 import datetime
@@ -18,6 +22,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _data_sources() -> None:
+    from core.ai_hedge_fund import data_sources
+    for kind, src in data_sources.install().items():
+        print(f"データ: {kind} = {src}")
 
 
 def _broker():
@@ -76,6 +86,7 @@ def main() -> int:
     if not getattr(args, "func", None):
         ap.print_help()
         return 0
+    _data_sources()
     return args.func(args)
 
 

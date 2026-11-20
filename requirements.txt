@@ -12,6 +12,7 @@ plotly>=5.18.0
 # Financial Data Feeds
 yfinance>=0.2.38
 requests>=2.31.0
+feedparser>=6.0
 
 # Machine Learning & Quantitative Analytics
 lightgbm>=4.0.0

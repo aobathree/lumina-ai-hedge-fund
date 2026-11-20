@@ -37,17 +37,23 @@ APPDATA="$PWD/.trial/appdata" .venv/bin/python -m pytest tests/ -q
 
 ## 1 サイクルだけ回す
 
-Webull の API は呼ばない。データは yfinance と FRED から取る。LLM の API キーが無いときは、合議は縮退モード（決定的な規則）で動く。
+Webull の API は呼ばない。市場データは、東証の銘柄は J-Quants、米国の株・ETF の日足は Alpaca、指数・為替と、鍵も控えも無いときは yfinance から取る（`core/ai_hedge_fund/data_sources.py`）。マクロは FRED。LLM の API キーが無いときは、合議は縮退モード（決定的な規則）で動く。
 
 環境変数（`.env` に書くか、シェルで `export` する）:
 
 | 変数 | 値の例 | 意味 |
 | --- | --- | --- |
 | `APPDATA` | `$PWD/.trial/appdata` | 状態ファイルの置き場 |
-| `LUMINA_BROKER` | `webull_intents` | 既定は `paper` |
+| `LUMINA_BROKER` | `webull_jp_cash` | 既定は `paper`。`webull_intents` = Webull の米国株・信用口座、`webull_jp_cash` = ウィブル証券の日本株・現物（どちらも意図を書くだけ） |
 | `LUMINA_DB_PATH` | `$PWD/.trial/webull.db` | 台帳（SQLite） |
 | `LUMINA_WEBULL_INTENT_DIR` | `$PWD/.trial/intents` | 意図と結果の JSONL の置き場 |
-| `LUMINA_WEBULL_INITIAL_USD` | `3200` | 新しい台帳を米ドルだけの元手にする |
+| `LUMINA_WEBULL_INITIAL_USD` | `3200` | 新しい台帳を米ドルだけの元手にする（`webull_intents`） |
+| `LUMINA_WEBULL_INITIAL_JPY` | `15000000` | 新しい台帳を円だけの元手にする（`webull_jp_cash`） |
+| `LUMINA_DATA_SOURCES` | `auto` | 既定 `auto`（東証 = J-Quants、米国の株・ETF = Alpaca、他 = yfinance）。`yfinance` で従来どおり |
+| `JQUANTS_API_KEY` | `op://…` | J-Quants の V2 の鍵。無ければ控え（`LUMINA_JQ_DIR`）だけを読み、それも無ければ yfinance |
+| `LUMINA_JQ_DIR` | `$PWD/.trial/jq` | J-Quants の控え（`scripts/jq_fetch.py --fundamentals` が作る） |
+| `ALPACA_API_KEY_ID` / `ALPACA_API_SECRET_KEY` | `op://…` | Alpaca のマーケットデータの鍵（Basic で足りる。直近 15 分の SIP は取らない） |
+| `LUMINA_ALPACA_DIR` | `$PWD/.trial/alpaca` | Alpaca の控え（`scripts/alpaca_fetch.py` が作る） |
 | `LUMINA_WEBULL_FILL_MODE` | `paper` | `paper` = 参考価格ですぐ記帳 / `await` = 執行機の結果を待つ |
 | `LUMINA_NYSE_CALENDAR_DIR` | `~/webull-api-jp/refdata` | 休業日と半日立会の表。無ければ平日だけで判定 |
 
@@ -105,3 +111,17 @@ LMT の合議 1 回で、LLM を差し替えて数えた入力の文字数（202
 - `WebullIntentBroker` は意図を `intents-<ET の日付>.jsonl` に書くだけで、Webull には何も送らない。
 - 意図を読んで関門を通し、発注するのは、別のリポジトリの執行機（`webull-api-jp` の `usm`）の仕事。
 - `await` のときは、執行機が `results-<ET の日付>.jsonl` に書く結果を待ち、約定した分だけを約定値で台帳に記帳する。
+
+## 過去の日の再生（`feat/jp-asof-replay`）
+
+ある日の大引け後（または寄前）の時点の値だけでフォークを 1 サイクル回し、その戦略を BRiSK の約定で再生する。
+手順と結果は作業記録のリポジトリ（`aobathree/lumina-ai-hf-trial` の `docs/plan/02〜04`・`docs/study/02〜04`）。
+
+| スクリプト | 中身 |
+| --- | --- |
+| `scripts/jq_fetch.py` | J-Quants の日足（`--fundamentals` で財務・銘柄情報・決算予定・配当も） |
+| `scripts/alpaca_fetch.py` | Alpaca の米国の株・ETF の日足 |
+| `scripts/brisk_extract_win.py` | Windows の BRiSK の録音から寄前の板・約定を取り出す（ssh で Windows の中で読む） |
+| `scripts/jp_preopen.py` | as-of の値で 1 サイクル。ウィブル証券の日本株・現物の意図を書き、戦略を `strategy.json` に |
+| `scripts/jp_council_probe.py` | as-of の値で合議だけを回す（判定を保存し、`jp_preopen.py --council-cache` で使い回す） |
+| `scripts/jp_intraday_sim.py` | 戦略を約定で再生（1 日 / 複数日、手仕舞い `hold` / `bracket` / `patrol`） |
