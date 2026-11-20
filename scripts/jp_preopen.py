@@ -26,16 +26,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 JST = dt.timezone(dt.timedelta(hours=9))
 
 
-def build_broker(db_path: str, preopen_path: str):
+def build_broker(db_path: str, preopen_path: str, kind: str = "webull_jp_cash", intent_dir: str = "",
+                 session: dt.datetime = None):
+    """再生用のブローカー。kind = webull_jp_cash（ウィブル証券の日本株・現物の意図を書く）か paper。"""
     from core.ai_hedge_fund.broker_client import PaperTradingEngine
     from core.ai_hedge_fund.deep_ofi_analyzer import DeepOFIAnalyzer
+    from core.ai_hedge_fund.webull_intent_broker import WebullJpCashIntentBroker
 
     books = {}
     if preopen_path:
         books = json.loads(Path(preopen_path).read_text(encoding="utf-8")).get("codes", {})
+    base = WebullJpCashIntentBroker if kind == "webull_jp_cash" else PaperTradingEngine
 
-    class ReplayBroker(PaperTradingEngine):
-        """paper 台帳に、寄前の板と、出した注文の控えを足したもの。"""
+    class ReplayBroker(base):
+        """ブローカーに、寄前の板と、出した注文の控えを足したもの。"""
 
         placed = []
 
@@ -61,7 +65,11 @@ def build_broker(db_path: str, preopen_path: str):
             })
             return res
 
-    return ReplayBroker(db_path=db_path)
+    if base is PaperTradingEngine:
+        return ReplayBroker(db_path=db_path)
+    # 意図の時刻は再生の時刻（注文を出す時刻）にする。台帳には参考価格で記帳する（paper）
+    return ReplayBroker(db_path=db_path, intent_dir=intent_dir, mode="paper", initial_jpy=0.0,
+                        now_fn=lambda: session.astimezone(dt.timezone.utc))
 
 
 def install_council_cache(path: Path, calls: list) -> None:
@@ -99,11 +107,14 @@ def main() -> int:
     ap.add_argument("--max-new-orders", type=int, default=6)
     ap.add_argument("--strategy", default="ALL")
     ap.add_argument("--llm", choices=["off", "on"], default="off")
+    ap.add_argument("--broker", choices=["webull_jp_cash", "paper"], default="webull_jp_cash",
+                    help="webull_jp_cash（既定）: ウィブル証券の日本株・現物の意図を <out>/intents に書く（発注はしない）")
     ap.add_argument("--tiebreak", default="universe",
                     help="スクリーナーの同点の並び: universe（既定。逐次に評価した順）/ asis（フォークのまま）/ shuffle:<seed>")
     ap.add_argument("--foreign-asof", help="東証以外（米国株・指数・VIX・為替・FRED）の as-of の日。既定は --asof")
     ap.add_argument("--council-cache", default="",
                     help="jp_council_probe.py の council.json。合議を呼ばず、その判定を返す（無い銘柄は HOLD にして記録する）")
+    ap.add_argument("--alpaca", default="", help="Alpaca の控えの置き場（scripts/alpaca_fetch.py の --out）。米国の株・ETF の日足を Alpaca から取る")
     ap.add_argument("--snapshot", default="", help="yfinance の値の控えの置き場（同じ日を何度も回すときに使う）")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
@@ -128,7 +139,8 @@ def main() -> int:
     from core.ai_hedge_fund import asof_replay
     asof_replay.install(asof=asof, jq_root=Path(args.jq), news_cutoff=cutoff, session_now=session,
                         snapshot_dir=Path(args.snapshot) if args.snapshot else None,
-                        foreign_asof=dt.date.fromisoformat(args.foreign_asof) if args.foreign_asof else None)
+                        foreign_asof=dt.date.fromisoformat(args.foreign_asof) if args.foreign_asof else None,
+                        alpaca_root=Path(args.alpaca) if args.alpaca else None)
     asof_replay.set_screen_tiebreak(args.tiebreak)
     council_calls = []
     if args.council_cache:
@@ -137,7 +149,7 @@ def main() -> int:
     from core.ai_hedge_fund import llm_client
     from core.ai_hedge_fund.auto_trader import AutoTrader
 
-    broker = build_broker(os.environ["LUMINA_DB_PATH"], args.preopen)
+    broker = build_broker(os.environ["LUMINA_DB_PATH"], args.preopen, args.broker, str(out / "intents"), session)
     broker.reset_portfolio(initial_jpy=args.capital, initial_usd=0.0)
 
     started = time.time()
@@ -164,6 +176,8 @@ def main() -> int:
         "snapshot": args.snapshot or None,
         "llm": llm,
         "seconds": round(took, 1),
+        "broker": f"{type(broker).__mro__[1].__name__}（{args.broker}）",
+        "data_sources": asof_replay.used_sources(),
         "orders": orders,
         "rejected": [o for o in broker.placed if not o["success"]],
         "cash_after_jpy": broker.get_account_balance().get("JPY"),
@@ -172,6 +186,11 @@ def main() -> int:
     (out / "cycle.log").write_text("\n".join(res.get("logs", [])) + "\n", encoding="utf-8")
     for line in res.get("logs", []):
         print(line)
+    src = asof_replay.used_sources()
+    by = {}
+    for sym, s_ in src.items():
+        by.setdefault(s_, []).append(sym)
+    print("--- データ: " + " / ".join(f"{k} {len(v)} 銘柄" for k, v in sorted(by.items())))
     print(f"--- LLM: {llm['provider']} / 呼び出し {u['calls']} 回（失敗 {u['errors']}）/ 入力 {u['input_tokens']:,} + 出力 {u['output_tokens']:,}")
     print(f"--- {took:.0f} 秒 / 寄りの買い {len(orders)} 件 → {out / 'strategy.json'}")
     for o in orders:

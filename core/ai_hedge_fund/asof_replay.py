@@ -29,9 +29,12 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 
-from core.ai_hedge_fund.jquants_source import (
-    INTRADAY, PRICE_COLS, JQuantsStore, JQuantsTicker, empty_frame, jq_code, price_fields, resample_bars, slice_bars,
+from core.ai_hedge_fund.bar_utils import (
+    INTRADAY, PRICE_COLS, empty_frame, price_fields, resample_bars, rewrite_info, slice_bars,
 )
+from core.ai_hedge_fund.alpaca_source import AlpacaStore, AlpacaTicker
+from core.ai_hedge_fund.data_sources import classify
+from core.ai_hedge_fund.jquants_source import JQuantsStore, JQuantsTicker, jq_code
 
 JST = dt.timezone(dt.timedelta(hours=9))
 
@@ -44,24 +47,37 @@ __all__ = ["install", "set_screen_tiebreak", "installed", "asof_date", "jp_symbo
 
 # ---------------------------------------------------------------- Ticker の差し替え
 
-_PRICE_DEPENDENT = ("marketCap", "trailingPE", "forwardPE", "priceToBook", "dividendYield", "trailingAnnualDividendYield")
 
 
 def AsOfTicker(symbol: str, *args, **kwargs):
-    """``yf.Ticker`` の代わり。東証の銘柄は J-Quants、それ以外は yfinance を asof で切ったもの。"""
-    if jq_code(str(symbol)) is not None:
-        # J-Quants に無い属性（ニュース等）は、asof・締め切りで切る包みを通して yfinance に回す
-        return JQuantsTicker(str(symbol), _STATE["store"], _STATE["asof"], real_factory=ForeignAsOfTicker)
-    return ForeignAsOfTicker(symbol, *args, **kwargs)
+    """``yf.Ticker`` の代わり。取り先は ``data_sources`` と同じ（東証 = J-Quants、米国の株・ETF = Alpaca、他 = yfinance）。
+
+    J-Quants・Alpaca に無い属性（財務の控え、ニュース等）と、行が無い銘柄は、asof・締め切りで切った yfinance に回す。
+    """
+    sym = str(symbol)
+    kind = classify(sym)
+    store, alpaca = _STATE["store"], _STATE.get("alpaca")
+    if kind == "jp" and store is not None and store.rows("daily", jq_code(sym)):
+        _STATE["used"][sym.upper()] = "J-Quants"
+        return JQuantsTicker(sym, store, _STATE["asof"], real_factory=lambda s: ForeignAsOfTicker(s, asof=_STATE["asof"]))
+    if kind == "us" and alpaca is not None and alpaca.rows(sym):
+        _STATE["used"][sym.upper()] = "Alpaca"
+        return AlpacaTicker(sym, alpaca, _STATE["foreign_asof"], real_factory=ForeignAsOfTicker)
+    _STATE["used"][sym.upper()] = "yfinance"
+    return ForeignAsOfTicker(sym, *args, asof=_STATE["asof"] if kind == "jp" else None, **kwargs)
 
 
 class ForeignAsOfTicker:
-    """東証以外の銘柄の yfinance の ``Ticker`` を包み、``asof`` より後の値を見せない。"""
+    """yfinance の ``Ticker`` を包み、as-of の日（既定は東証以外の as-of の日）より後の値を見せない。
 
-    def __init__(self, symbol: str, *args, **kwargs):
+    J-Quants・Alpaca の控え（財務・ニュース等）と、どちらにも行が無い銘柄に使う。
+    """
+
+    def __init__(self, symbol: str, *args, asof: Optional[dt.date] = None, **kwargs):
         self._symbol = str(symbol)
         self._real = _STATE["real_ticker"](symbol, *args, **kwargs)
         self._info: Optional[Dict[str, Any]] = None
+        self._asof = asof or _STATE["foreign_asof"]
 
     def __getattr__(self, name: str):
         if name.startswith("_"):
@@ -86,7 +102,7 @@ class ForeignAsOfTicker:
             return cache[self._symbol]
 
     def history(self, period: Optional[str] = "1mo", interval: str = "1d", start=None, end=None, **kwargs) -> pd.DataFrame:
-        asof: dt.date = _STATE["foreign_asof"]
+        asof: dt.date = self._asof
         if interval in INTRADAY:
             try:
                 df = self._real.history(period=period, interval=interval, start=start, end=end, **kwargs)
@@ -105,8 +121,16 @@ class ForeignAsOfTicker:
                 real = dict(_snapshot(self._symbol, "info", lambda: self._real.info) or {})
             except Exception:
                 real = {}
-            self._info = rewrite_info(real, self._daily(), _STATE["foreign_asof"])
+            self._info = rewrite_info(real, self._daily(), self._asof)
         return self._info
+
+    @property
+    def raw_info(self) -> Dict[str, Any]:
+        """yfinance の info をそのまま（価格を置き直す前）。Alpaca の日足で置き直すときに使う。"""
+        try:
+            return dict(_snapshot(self._symbol, "info", lambda: self._real.info) or {})
+        except Exception:
+            return {}
 
     @property
     def fast_info(self) -> Dict[str, Any]:
@@ -139,7 +163,7 @@ class ForeignAsOfTicker:
         if df is None or getattr(df, "empty", True) or "Start Date" not in df.columns:
             return pd.DataFrame()
         dates = pd.to_datetime(df["Start Date"], errors="coerce")
-        return df[dates.dt.date <= _STATE["foreign_asof"]]
+        return df[dates.dt.date <= self._asof]
 
     @property
     def insider_purchases(self) -> pd.DataFrame:
@@ -147,11 +171,11 @@ class ForeignAsOfTicker:
 
     @property
     def dividends(self) -> pd.Series:
-        return _cut_series(_snapshot(self._symbol, "dividends", lambda: self._real.dividends))
+        return _cut_series(_snapshot(self._symbol, "dividends", lambda: self._real.dividends), self._asof)
 
     @property
     def splits(self) -> pd.Series:
-        return _cut_series(_snapshot(self._symbol, "splits", lambda: self._real.splits))
+        return _cut_series(_snapshot(self._symbol, "splits", lambda: self._real.splits), self._asof)
 
 
 SNAPSHOT_ATTRS = {
@@ -211,43 +235,10 @@ def _snapshot(symbol: str, name: str, fetch):
     return value
 
 
-def _cut_series(s):
+def _cut_series(s, asof: dt.date):
     if s is None or len(s) == 0:
         return s
-    return s[pd.Index([ts.date() for ts in s.index]) <= _STATE["foreign_asof"]]
-
-
-def rewrite_info(real: Dict[str, Any], daily: pd.DataFrame, asof: dt.date) -> Dict[str, Any]:
-    """東証以外の ``info`` の価格と、価格から決まる指標を ``asof`` の終値で置き直す。
-
-    日足が無ければ価格の項目を消す（いまの値を残さない）。
-    """
-    info = dict(real)
-    bars = slice_bars(daily, asof, None) if daily is not None else None
-    px = price_fields(bars) if bars is not None else {}
-    if not px:
-        for k in ("currentPrice", "regularMarketPrice", "previousClose", "regularMarketPreviousClose", "open",
-                  "regularMarketOpen", "dayHigh", "dayLow", "fiftyTwoWeekHigh", "fiftyTwoWeekLow") + _PRICE_DEPENDENT:
-            info.pop(k, None)
-        return info
-    close = px["currentPrice"]
-    live_price = real.get("currentPrice") or real.get("regularMarketPrice")
-    info.update(px)
-    if real.get("trailingEps"):
-        info["trailingPE"] = close / float(real["trailingEps"]) if float(real["trailingEps"]) > 0 else None
-    if real.get("forwardEps"):
-        info["forwardPE"] = close / float(real["forwardEps"]) if float(real["forwardEps"]) > 0 else None
-    if real.get("bookValue"):
-        info["priceToBook"] = close / float(real["bookValue"]) if float(real["bookValue"]) > 0 else None
-    if live_price and float(live_price) > 0:
-        ratio = close / float(live_price)
-        if real.get("marketCap"):
-            info["marketCap"] = float(real["marketCap"]) * ratio
-        for k in ("dividendYield", "trailingAnnualDividendYield"):
-            if real.get(k):
-                info[k] = float(real[k]) / ratio
-    info["_asof"] = asof.isoformat()
-    return info
+    return s[pd.Index([ts.date() for ts in s.index]) <= asof]
 
 
 # ---------------------------------------------------------------- download の差し替え
@@ -316,12 +307,15 @@ def _yf_news_before_cutoff(n: Dict[str, Any]) -> bool:
 
 def install(asof: dt.date, jq_root: Path, news_cutoff: dt.datetime,
             session_now: Optional[dt.datetime] = None, snapshot_dir: Optional[Path] = None,
-            fetch_missing: bool = False, foreign_asof: Optional[dt.date] = None) -> None:
+            fetch_missing: bool = False, foreign_asof: Optional[dt.date] = None,
+            alpaca_root: Optional[Path] = None) -> None:
     """同じプロセスの yfinance・ニュース・立会の判定を、as-of の値に差し替える。
 
     ``jq_root`` は J-Quants の控えの置き場（``jquants_source.JQuantsStore``、``scripts/jq_fetch.py`` が作る）。
     ``fetch_missing`` が真なら、控えに無い銘柄を J-Quants から取りに行く（鍵が要る）。
     ``snapshot_dir`` を渡すと、東証以外の yfinance の値を控え、次の実行から使い回す。
+    ``alpaca_root`` は Alpaca の控えの置き場（``alpaca_source.AlpacaStore``、``scripts/alpaca_fetch.py`` が作る）。
+    渡すと、米国の株・ETF の日足を Alpaca から取る（行の無い銘柄は yfinance）。
     ``foreign_asof`` は東証以外（米国株・指数・VIX・為替・FRED）の as-of の日。既定は ``asof`` と同じ。
     日本の大引け後に判断するときは、その日の米国の立会はまだなので前日にする。
     """
@@ -334,6 +328,8 @@ def install(asof: dt.date, jq_root: Path, news_cutoff: dt.datetime,
         "asof": asof,
         "foreign_asof": foreign_asof or asof,
         "store": JQuantsStore(Path(jq_root), fetch=fetch_missing),
+        "alpaca": AlpacaStore(Path(alpaca_root), fetch=fetch_missing) if alpaca_root else None,
+        "used": {},
         "news_cutoff": news_cutoff,
         "session_now": session_now or dt.datetime.combine(asof + dt.timedelta(days=1), dt.time(9, 0), JST),
         "foreign_cache": {},
@@ -452,6 +448,11 @@ def set_screen_tiebreak(mode: str) -> None:
 
     MarketScreener.assign_rs_ratings = classmethod(_assign)
     _STATE["tiebreak"] = mode
+
+
+def used_sources() -> Dict[str, str]:
+    """install() のあとに作られた Ticker の、銘柄 → 取り先（J-Quants / Alpaca / yfinance）。"""
+    return dict(_STATE.get("used") or {})
 
 
 def installed() -> bool:

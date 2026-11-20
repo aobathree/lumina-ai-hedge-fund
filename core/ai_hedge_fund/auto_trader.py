@@ -952,6 +952,13 @@ class AutoTrader:
                 candidates = [c for c in candidates if not c["symbol"].endswith(".T")]
                 logs.append(f"[{now_str}] 🇺🇸 【米国市場取引時間中】米国株のみを重点発掘・合議します（日本株は翌09:00の東証開場まで待機）")
 
+        # 日本株しか扱えないブローカー（ウィブル証券の日本株・現物）のときは、候補を東証の銘柄に絞る
+        if getattr(broker_engine, "jp_only", False):
+            n_before = len(candidates)
+            candidates = [c for c in candidates if str(c.get("symbol", "")).endswith(".T")]
+            if len(candidates) != n_before:
+                logs.append(f"[{now_str}] 🇯🇵 【日本株のみ】このブローカーは東証の銘柄だけを扱うため、{n_before - len(candidates)} 銘柄を候補から外しました。")
+
         # 米国株しか扱えないブローカー（Webull の信用口座）のときは、候補を米国株に絞る
         if getattr(broker_engine, "us_only", False):
             n_before = len(candidates)

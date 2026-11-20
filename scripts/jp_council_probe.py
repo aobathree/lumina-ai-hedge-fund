@@ -26,6 +26,7 @@ def main() -> int:
     ap.add_argument("--asof", required=True)
     ap.add_argument("--session", required=True)
     ap.add_argument("--jq", required=True, help="J-Quants の控えの置き場（scripts/jq_fetch.py の --out）")
+    ap.add_argument("--alpaca", default="", help="Alpaca の控えの置き場（scripts/alpaca_fetch.py の --out）。米国の株・ETF の日足を Alpaca から取る")
     ap.add_argument("--snapshot", default="", help="yfinance の値の控えの置き場（jp_preopen.py と同じものを使う）")
     ap.add_argument("--foreign-asof", help="東証以外（米国株・指数・VIX・為替・FRED）の as-of の日。既定は --asof")
     ap.add_argument("--news-cutoff", help="これより前のニュースだけ使う（JST）。既定は --session の日の 08:00")
@@ -45,7 +46,8 @@ def main() -> int:
     asof_replay.install(asof=dt.date.fromisoformat(args.asof), jq_root=Path(args.jq),
                         news_cutoff=cutoff, session_now=session,
                         snapshot_dir=Path(args.snapshot) if args.snapshot else None,
-                        foreign_asof=dt.date.fromisoformat(args.foreign_asof) if args.foreign_asof else None)
+                        foreign_asof=dt.date.fromisoformat(args.foreign_asof) if args.foreign_asof else None,
+                        alpaca_root=Path(args.alpaca) if args.alpaca else None)
 
     from core.ai_hedge_fund import llm_client
     from core.ai_hedge_fund.hedge_fund_council import HedgeFundCouncil

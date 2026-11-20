@@ -118,7 +118,7 @@ def state(jq_root):
     ar._STATE.update({
         "installed": True, "asof": ASOF, "store": jqs.JQuantsStore(jq_root, fetch=False),
         "news_cutoff": dt.datetime(2026, 11, 20, 8, 0, tzinfo=JST), "foreign_cache": {}, "real_ticker": _FakeReal,
-        "foreign_asof": ASOF,
+        "foreign_asof": ASOF, "alpaca": None, "used": {},
     })
     yield jq_root
     ar._STATE.clear()
