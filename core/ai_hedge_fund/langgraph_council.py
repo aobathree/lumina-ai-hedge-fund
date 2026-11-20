@@ -193,7 +193,7 @@ class LuminaLangGraphCouncil:
         prompt = f"""あなたはLumina Capital投資委員会における「最強Bull（強気派） vs 最強Bear（弱気派）」の直接対立討論（Cross-Debate）モデレーターです。
 
 対象銘柄: {symbol}
-【数理アンサンブル指標 (Google TimesFM × Amazon Chronos)】
+【数理アンサンブル指標 ({quantum.get('ensemble_label', '予測バックエンド不明')})】
 - 合意ステータス: {quantum.get('consensus_status')} ({quantum.get('consensus_badge')})
 - 期待リターン: {quantum.get('ensemble_expected_return_pct')}%
 - 下落確率: {quantum.get('avg_downside_risk_prob')}% / 急騰確率: {quantum.get('avg_upside_breakout_prob')}%
@@ -268,7 +268,7 @@ class LuminaLangGraphCouncil:
 強気派と弱気派の対立討論（第 {current_round} ラウンド）を監査し、定量根拠が十分か、リスクが過大でないかを冷徹に判定してください。
 
 対象銘柄: {symbol}
-【数理予測 (Google TimesFM × Amazon Chronos)】
+【数理予測 ({quantum.get('ensemble_label', '予測バックエンド不明')})】
 - 状態: {quantum.get('consensus_status')} / 下落確率: {quantum.get('avg_downside_risk_prob')}%
 【⚡ LightGBM メタ決定木勝率】: {lgb_gate.get('gate_badge', 'N/A')} (統計勝率: {lgb_gate.get('win_probability', 'N/A')}%)
 【🔗 先行リードラグ因果】: {lead_lag.get('signal_badge', 'N/A')}
@@ -349,7 +349,7 @@ class LuminaLangGraphCouncil:
 対象銘柄: {stock_data.get('name', symbol)} ({symbol})
 現在株価: {stock_data.get('current_price', 0.0)}
 
-【1. 二刀流数理アンサンブル (Google TimesFM × Amazon Chronos)】
+【1. 二刀流数理アンサンブル ({quantum.get('ensemble_label', '予測バックエンド不明')})】
 - 合意バッジ: {quantum.get('consensus_badge')}
 - 5日後期待リターン: {quantum.get('ensemble_expected_return_pct')}%
 - 下落リスク確率: {quantum.get('avg_downside_risk_prob')}% / 急騰確率: {quantum.get('avg_upside_breakout_prob')}%

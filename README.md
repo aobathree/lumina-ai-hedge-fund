@@ -245,6 +245,12 @@ If you prefer running directly on your host machine:
 pip install -r requirements.txt
 ```
 
+> **Forecast backends are optional.** `requirements.txt` does not install `timesfm`, `chronos-forecasting` or `torch`.
+> Without them (the default), the "TimesFM" and "Chronos" slots are filled by closed-form momentum/volatility
+> approximations, and the output says so: the result carries `backend`, `is_foundation_model` and `model_label`,
+> and the text passed to the LLM council is headed "モメンタム近似（TimesFM 未使用）" rather than "Google TimesFM".
+> To run the foundation models, install them yourself and set `LUMINA_USE_NATIVE_TIMESFM=1`.
+
 #### 2. Configure Environment
 ```bash
 cp .env.example .env
@@ -406,6 +412,7 @@ docker compose up
 
 #### 🐍 方法B: 通常のPython環境で直接動かす場合
 1. **依存パッケージ導入**: `pip install -r requirements.txt`
+   - 時系列の基盤モデル（`timesfm`、`chronos-forecasting`、`torch`）は `requirements.txt` に入っていません。入れない場合（既定）は、モメンタムとボラティリティの近似式が動き、出力と合議への文面にも「モメンタム近似（TimesFM 未使用）」と表示されます。基盤モデルを使うには、別途インストールして `LUMINA_USE_NATIVE_TIMESFM=1` を設定します。
 2. **APIキー設定**: `cp .env.example .env` を実行し、[Google AI Studio](https://aistudio.google.com/) で無料取得できる `GEMINI_API_KEY` を貼り付けます。
 3. **ダッシュボード起動**: `streamlit run app.py`（ブラウザで `http://localhost:8501` を開く）
 

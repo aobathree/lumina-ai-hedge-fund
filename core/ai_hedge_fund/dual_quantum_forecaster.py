@@ -39,22 +39,50 @@ class DualQuantumForecaster:
         both_bear = (tfm_ret <= -1.5) and (chr_ret <= -1.5)
         conflict = (tfm_ret * chr_ret < -1.0) # 符号が逆で乖離大
 
+        # 実際に動いたバックエンドを見て、文言を決める。
+        # 近似式（どちらも直近のモメンタムが主な入力）の結果を、基盤モデルの予測・合意と書かない。
+        tfm_native = bool(timesfm_res.get("is_foundation_model", False))
+        chr_native = bool(chronos_res.get("is_foundation_model", False))
+        tfm_label = timesfm_res.get("model_label") or ("Google TimesFM" if tfm_native else "モメンタム近似（TimesFM 未使用）")
+        chr_label = chronos_res.get("model_label") or ("Amazon Chronos" if chr_native else "モメンタム近似（Chronos 未使用）")
+        both_native = tfm_native and chr_native
+        if both_native:
+            ensemble_label = "Google TimesFM × Amazon Chronos"
+            caveat = ""
+        elif tfm_native or chr_native:
+            ensemble_label = f"{tfm_label} × {chr_label}"
+            caveat = " ※片方は基盤モデルではなく近似式。"
+        else:
+            ensemble_label = "モメンタム近似 2 本（基盤モデル未使用）"
+            caveat = " ※基盤モデルは使っていない。2 本とも直近モメンタムの近似式で、独立した 2 モデルの合意ではない。"
+
         if both_bull:
             consensus_status = "DOUBLE_BULLISH" # 🚀 両者揃って強気一致
-            consensus_badge = "🚀 DOUBLE BULLISH (Google×Amazon 確率合意)"
-            summary_desc = "Google TimesFM と Amazon Chronos の双方が上昇予測で完全合意。最高ランクの確信シグナル。"
+            if both_native:
+                consensus_badge = "🚀 DOUBLE BULLISH (Google×Amazon 確率合意)"
+                summary_desc = "Google TimesFM と Amazon Chronos の双方が上昇予測で完全合意。最高ランクの確信シグナル。"
+            else:
+                consensus_badge = f"🚀 DOUBLE BULLISH ({ensemble_label})"
+                summary_desc = f"{tfm_label} と {chr_label} がともに上昇を示した。{caveat.strip()}"
         elif both_bear:
             consensus_status = "DOUBLE_BEARISH" # ⚠️ 両者揃って急落警戒一致
-            consensus_badge = "⚠️ DOUBLE BEARISH (急落警戒合意)"
-            summary_desc = "両時系列基盤モデルが下落リスクで一致。買いエントリーの厳格見送りを推奨。"
+            if both_native:
+                consensus_badge = "⚠️ DOUBLE BEARISH (急落警戒合意)"
+                summary_desc = "両時系列基盤モデルが下落リスクで一致。買いエントリーの厳格見送りを推奨。"
+            else:
+                consensus_badge = f"⚠️ DOUBLE BEARISH ({ensemble_label})"
+                summary_desc = f"{tfm_label} と {chr_label} がともに下落を示した。{caveat.strip()}"
         elif conflict:
             consensus_status = "DISAGREEMENT" # ⚔️ モデル間で予測乖離・対立
             consensus_badge = "⚔️ MODEL CONFLICT (数理予測の対立)"
-            summary_desc = f"Google ({tfm_ret:+.2f}%) と Amazon ({chr_ret:+.2f}%) で方向性が乖離。ボラティリティ急変に警戒。"
+            if both_native:
+                summary_desc = f"Google ({tfm_ret:+.2f}%) と Amazon ({chr_ret:+.2f}%) で方向性が乖離。ボラティリティ急変に警戒。"
+            else:
+                summary_desc = f"{tfm_label} ({tfm_ret:+.2f}%) と {chr_label} ({chr_ret:+.2f}%) で方向性が乖離。{caveat.strip()}"
         else:
             consensus_status = "NEUTRAL"
             consensus_badge = "⚖️ QUANTUM NEUTRAL (レンジ推移)"
-            summary_desc = "両モデルともに小幅レンジ内の推移を予測。トレンド発生待ち。"
+            summary_desc = "両モデルともに小幅レンジ内の推移を予測。トレンド発生待ち。" if both_native else f"2 本とも小幅レンジ内の推移を示した。{caveat.strip()}"
 
         # 3. アンサンブル合成値（加重平均）
         ensemble_expected_ret = round((tfm_ret * 0.5 + chr_ret * 0.5), 2)
@@ -89,6 +117,9 @@ class DualQuantumForecaster:
             "avg_downside_risk_prob": round((tfm_down + chr_down) / 2.0, 1),
             "avg_upside_breakout_prob": round((tfm_up + chr_up) / 2.0, 1),
             "summary_desc": summary_desc,
+            "ensemble_label": ensemble_label,
+            "foundation_models_used": [n for n, used in (("timesfm", tfm_native), ("chronos", chr_native)) if used],
+            "backends": {"timesfm": timesfm_res.get("backend"), "chronos": chronos_res.get("backend")},
             "models": {
                 "google_timesfm": timesfm_res,
                 "amazon_chronos": chronos_res
