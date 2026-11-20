@@ -240,12 +240,34 @@ class HedgeFundCouncil:
             if not active_agents:
                 active_agents = cls.AVAILABLE_AGENTS
 
+        # 6.5 CRO の拒否権を先に判定する（LLM の消費を抑える）。
+        # 拒否の条件は stock_data と context_data だけで決まり、投資家役の評価には左右されない。
+        # 拒否が確定している銘柄は、どのみち配分 0 の HOLD になるので、投資家役と討論の LLM を呼ばない。
+        # LUMINA_VETO_PRECHECK=0 で、従来の順序（先に全員を LLM で評価）に戻せる。
+        veto_precheck = None
+        if os.getenv("LUMINA_VETO_PRECHECK", "1") != "0":
+            try:
+                pre = RiskManagerAgent.evaluate_risk(stock_data, [], context_data)
+                if pre.get("veto_triggered"):
+                    veto_precheck = pre
+            except Exception as pre_err:
+                print(f"[HedgeFundCouncil] Veto precheck warning (falling back to full council): {pre_err}")
+
         # 7. Execute Parallel Independent Reasoning (Blind Evaluation)
         analyst_results: List[Dict[str, Any]] = []
+        if veto_precheck is not None:
+            skip_note = f"【LLM未実行: CROの拒否権が先に確定（{veto_precheck.get('veto_reason', '')}）】"
+            for agent_cls in active_agents:
+                res = agent_cls._rule_based_fallback(stock_data, context_data)
+                res["is_degraded_fallback"] = False  # LLM の障害ではない。意図して呼んでいない
+                res["llm_skipped"] = True
+                res["llm_skipped_reason"] = "CRO_VETO_PRECHECK"
+                res["dialogue"] = f"{skip_note} 以下は規則ベースの参考値: {res.get('dialogue', '')}"
+                analyst_results.append(res)
         with ThreadPoolExecutor(max_workers=min(8, len(active_agents))) as executor:
             future_to_agent = {
                 executor.submit(agent_cls.evaluate, stock_data, context_data): agent_cls
-                for agent_cls in active_agents
+                for agent_cls in (active_agents if veto_precheck is None else [])
             }
             for future in as_completed(future_to_agent):
                 agent_cls = future_to_agent[future]
@@ -280,10 +302,15 @@ class HedgeFundCouncil:
         analyst_results.sort(key=lambda x: id_order.index(x.get("agent_id")) if x.get("agent_id") in id_order else 99)
 
         # 8. Phase 2: Fact-Grounded Cross-Debate (Bear Leader vs Bull Leader)
-        cross_debate = cls._run_cross_debate(stock_data, analyst_results, context_data)
+        if veto_precheck is not None:
+            cross_debate = {"occurred": False, "reason": "CROの拒否権が先に確定したため、直接討論を省略（LLM未実行）"}
+        else:
+            cross_debate = cls._run_cross_debate(stock_data, analyst_results, context_data)
 
         # 9. Risk Manager Evaluation (Devil's Advocate, Veto Power & Position Limiter)
         risk_result = RiskManagerAgent.evaluate_risk(stock_data, analyst_results, context_data)
+        if veto_precheck is not None:
+            risk_result["llm_skipped_by_veto"] = True
 
         if langfuse_trace:
             LuminaLangfuseTracer.record_agent_span(

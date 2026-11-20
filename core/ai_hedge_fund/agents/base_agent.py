@@ -107,6 +107,33 @@ class BaseInvestmentAgent:
         fb["degraded_reason"] = BaseInvestmentAgent._circuit_reason or "LLM_API_UNAVAILABLE"
         return fb
 
+    # 予測の辞書のうち、プロンプトに入れない項目（日ごとの経路、モデルの設定、派生の特徴量、他の項目の言い直し）
+    _FORECAST_KEYS_NOT_FOR_PROMPT = ("trajectory", "pinned_config", "normalized_features", "summary_text")
+
+    @classmethod
+    def compact_context_for_prompt(cls, ctx: Dict[str, Any], has_ontology_section: bool = True) -> Dict[str, Any]:
+        """
+        プロンプトに入れる文脈から、重複と使われない項目を外す（元の辞書は変えない）。
+
+        - dual_quantum.models は、timesfm_forecast と chronos_forecast と同じ中身なので外す
+        - factor_ontology は、整形済みの節として既にプロンプトにあるときだけ外す
+        - 予測の日ごとの経路・モデルの設定などを外す（最終日の値、レンジ、確率は残す）
+        LUMINA_COMPACT_PROMPT=0 で、従来どおり全部を入れる。
+        """
+        out = dict(ctx)
+        dq = out.get("dual_quantum")
+        if isinstance(dq, dict) and "models" in dq:
+            has_both = isinstance(out.get("timesfm_forecast"), dict) and isinstance(out.get("chronos_forecast"), dict)
+            if has_both and out["timesfm_forecast"] and out["chronos_forecast"]:
+                out["dual_quantum"] = {k: v for k, v in dq.items() if k != "models"}
+        if has_ontology_section:
+            out.pop("factor_ontology", None)
+        for key in ("timesfm_forecast", "chronos_forecast"):
+            fc = out.get(key)
+            if isinstance(fc, dict):
+                out[key] = {k: v for k, v in fc.items() if k not in cls._FORECAST_KEYS_NOT_FOR_PROMPT}
+        return out
+
     @classmethod
     def _build_evaluation_prompt(cls, stock_data: Dict[str, Any], context_data: Optional[Dict[str, Any]] = None) -> str:
         symbol = stock_data.get("symbol", "UNKNOWN")
@@ -120,15 +147,8 @@ class BaseInvestmentAgent:
         div_yield = stock_data.get("dividend_yield", "N/A")
         news_text = stock_data.get("news_sentiment_summary", "特記事項なし")
         
+        # ctx_str は、因子オントロジーの節を作ったあとで組み立てる（下）。
         ctx_str = ""
-        if context_data:
-            ctx_clean = {
-                k: v for k, v in context_data.items()
-                if k not in ("openbb_bundle", "broker_engine", "master_mandates_prompt")
-                and isinstance(v, (str, int, float, bool, list, dict, type(None)))
-            }
-            if ctx_clean:
-                ctx_str = f"\n【市場マクロ・周辺インテル】\n{json.dumps(ctx_clean, ensure_ascii=False, indent=2)}"
 
         # Agent-specific OpenBB institutional intel
         openbb_section = ""
@@ -158,6 +178,20 @@ class BaseInvestmentAgent:
             ontology_section = FactorOntology.format_for_agent_prompt(ont_bundle, agent_id=cls.agent_id)
         except Exception:
             pass
+
+        if context_data:
+            ctx_clean = {
+                k: v for k, v in context_data.items()
+                if k not in ("openbb_bundle", "broker_engine", "master_mandates_prompt")
+                and isinstance(v, (str, int, float, bool, list, dict, type(None)))
+            }
+            if os.getenv("LUMINA_COMPACT_PROMPT", "1") != "0":
+                ctx_clean = cls.compact_context_for_prompt(ctx_clean, has_ontology_section=bool(ontology_section))
+                dump_kwargs = {"separators": (",", ":")}
+            else:
+                dump_kwargs = {"indent": 2}
+            if ctx_clean:
+                ctx_str = f"\n【市場マクロ・周辺インテル】\n{json.dumps(ctx_clean, ensure_ascii=False, **dump_kwargs)}"
 
         # Agent-specific Reflexion Memory (Past self-critiques via FTS5 BM25)
         reflexion_section = ""
