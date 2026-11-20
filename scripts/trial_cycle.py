@@ -54,6 +54,10 @@ def cmd_run(args) -> int:
     for line in res.get("logs", []):
         print(line)
     took = (datetime.datetime.now() - started).total_seconds()
+    from core.ai_hedge_fund import llm_client
+    u = llm_client.usage_snapshot()
+    print(f"--- LLM: {llm_client.provider() or 'なし（縮退モード）'} / Claude の呼び出し {u['calls']} 回（失敗 {u['errors']}）/ "
+          f"入力 {u['input_tokens']:,} + 出力 {u['output_tokens']:,} トークン / モデル {llm_client.claude_model()}")
     print(f"--- {took:.0f} 秒 / 新規 {len(res.get('opened_orders', []))} 件 / 決済 {len(res.get('closed_orders', []))} 件")
     return 0
 
