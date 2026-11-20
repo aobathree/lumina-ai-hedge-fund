@@ -232,6 +232,13 @@ class PortfolioManagerAgent:
     ) -> str:
         """Generate high-conviction editorial synthesis"""
         from core.ai_hedge_fund.agents.base_agent import BaseInvestmentAgent
+        if risk_result.get("llm_skipped_by_veto"):
+            # 拒否権が先に確定した銘柄。投資家役の LLM を呼んでいないので、総括も LLM に書かせない
+            return (
+                f"【CRO拒否権を先行判定】{risk_result.get('veto_reason', 'リスク管理上の拒否条件に該当')}。"
+                "新規建ては見送り（配分0%）。拒否が確定しているため、投資家エージェントの評価と直接討論は"
+                "LLMを呼ばずに省略した（各エージェントの発言は規則ベースの参考値）。"
+            )
         if is_degraded_mode or BaseInvestmentAgent.is_circuit_open():
             return (
                 "【🛡️ LLM API縮退防衛モード作動】外部LLM推論APIのレート制限（HTTP 429）または応答遅延を検知したため、"
