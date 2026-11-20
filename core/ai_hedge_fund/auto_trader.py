@@ -947,6 +947,13 @@ class AutoTrader:
                 candidates = [c for c in candidates if not c["symbol"].endswith(".T")]
                 logs.append(f"[{now_str}] 🇺🇸 【米国市場取引時間中】米国株のみを重点発掘・合議します（日本株は翌09:00の東証開場まで待機）")
 
+        # 米国株しか扱えないブローカー（Webull の信用口座）のときは、候補を米国株に絞る
+        if getattr(broker_engine, "us_only", False):
+            n_before = len(candidates)
+            candidates = [c for c in candidates if "." not in str(c.get("symbol", ""))]
+            if len(candidates) != n_before:
+                logs.append(f"[{now_str}] 🇺🇸 【米国株のみ】このブローカーは米国株だけを扱うため、{n_before - len(candidates)} 銘柄を候補から外しました。")
+
         # Filter candidates by 90-minute cooldown to ensure rich symbol rotation
         now_ts = time.time()
         available_candidates = []

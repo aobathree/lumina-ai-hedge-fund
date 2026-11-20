@@ -70,7 +70,9 @@ def render_mode_ai_hedge_fund(api_key: str = "", generator = None, target_model:
         t("tab_content")
     ])
 
-    paper_engine = PaperTradingEngine()
+    # LUMINA_BROKER で選ぶ（既定は paper = PaperTradingEngine）
+    from core.ai_hedge_fund.webull_intent_broker import create_broker
+    paper_engine = create_broker()
 
     # =========================================================================
     # TAB 1: 🏛️ AI投資作戦会議 (Investment Council)

@@ -34,6 +34,8 @@ class OrderIdempotencyGuard:
 
     def __init__(self, db_path: Optional[str] = None):
         if db_path is None:
+            db_path = os.getenv("LUMINA_DB_PATH") or None
+        if db_path is None:
             # PaperTradingEngineと同じDBを使用
             app_data_dir = os.path.join(os.getenv('APPDATA', ''), 'LuminaAI')
             if not os.path.exists(app_data_dir):
