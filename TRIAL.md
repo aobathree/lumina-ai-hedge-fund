@@ -1,6 +1,6 @@
 # trial ブランチ（試運転用）
 
-upstream `main`（`d2a29ef`）に、次の 7 本をマージした実行用のブランチ。upstream には無い。
+upstream `main`（`d2a29ef`）に、次の 8 本をマージした実行用のブランチ。upstream には無い。
 
 | ブランチ | 中身 |
 | --- | --- |
@@ -11,6 +11,7 @@ upstream `main`（`d2a29ef`）に、次の 7 本をマージした実行用の�
 | `fix/issue-9-ibkr-bracket` | IBKR の戻り値と文書（#9） |
 | `feat/webull-intents` | Webull 向けに「発注の意図」を書き出すブローカー |
 | `feat/claude-llm-1password` | LLM の呼び出しに Claude を使う。鍵は 1Password の秘密参照で渡せる |
+| `perf/llm-token-savings` | LLM の消費を抑える（CRO の拒否権を先に判定、プロンプトの重複を削る） |
 
 ## 準備
 
@@ -83,6 +84,15 @@ op run --env-file .env.op -- .venv/bin/python scripts/trial_cycle.py run --ignor
 | `LUMINA_CLAUDE_EFFORT` | `medium` | `low` / `medium` / `high` / `xhigh` / `max` |
 
 鍵が解決できないときは、参照の文字列を鍵として送らず、合議は縮退モードで動く。
+
+消費を抑える設定（どちらも既定で有効。`0` で従来の動きに戻る）:
+
+| 変数 | 既定 | 意味 |
+| --- | --- | --- |
+| `LUMINA_VETO_PRECHECK` | `1` | CRO の拒否権を先に判定し、拒否が確定した銘柄では投資家役・討論・総括の LLM を呼ばない |
+| `LUMINA_COMPACT_PROMPT` | `1` | 投資家役のプロンプトから、重複と使われない項目を外す |
+
+LMT の合議 1 回で、LLM を差し替えて数えた入力の文字数（2026-11-20）: 従来 134,173（9 回）→ 重複を外して 56,795（9 回）→ 拒否権を先に判定して 1,078（1 回）。
 
 ## ダッシュボード
 
