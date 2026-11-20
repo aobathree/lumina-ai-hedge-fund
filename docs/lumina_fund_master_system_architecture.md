@@ -185,7 +185,7 @@ During asset examination, each analyst agent operates in total isolation, with z
                              Interactive Brokers API
                                          ▼
 +-----------------------------------------------------------------------------------+
-|               Server-Side OCO Bracket Orders (On-Exchange Persistence)            |
+|        Client-Side Stop Monitoring (no orders resting on the exchange)            |
 +-----------------------------------------------------------------------------------+
 ```
 
@@ -216,8 +216,10 @@ During asset examination, each analyst agent operates in total isolation, with z
 ### 5.4 Market Breadth Cash Shield (QuantConnect Lean Model)
 * Continuously evaluates universe 200-day SMA breadth. If market participation drops below $45\%$, maximum portfolio capacity is downsized from **6 slots to 2 slots**, auto-preserving cash.
 
-### 5.5 Server-Side OCO Bracket Orders & OrderIdempotencyGuard
-* Places entry, take-profit, and stop-loss simultaneously on IBKR exchange servers. Even if the VPS reboots or loses connectivity, positions remain protected.
+### 5.5 Order Placement & OrderIdempotencyGuard
+* **Server-side OCO bracket orders are not implemented in this release.** `IBKRClient.place_order` sends one market or limit order; take-profit and stop-loss prices are tick-rounded but not sent. Stops are evaluated client-side by the 10-second watchdog loop, so a position is unprotected on the exchange while the process is down. The result carries `bracket_attached: False`.
+* `place_order` waits for the order to leave `PendingSubmit` and reports `success: False` if it is cancelled, inactive, or not acknowledged within 5 seconds.
+* `IBKRClient` is not wired into the daemon or the dashboard; the running broker is `PaperTradingEngine`.
 * `OrderIdempotencyGuard` deduplicates Client Order IDs and discards stale signals older than 90 seconds.
 
 ### 5.6 IBKR Daily Maintenance Reconnect Resilience & Post-Reconnect Reconciliation (v6.4.7)
@@ -424,7 +426,7 @@ In addition to historical econometrics, the live execution engine is continuousl
 | **Risk & Execution**| `rust_sentinel/src/main.rs` | `lumina-sentinel-rs`: Pure Rust 3.63ns risk sentinel (timeout bar support) |
 | | `core/ai_hedge_fund/rust_sentinel_bridge.py`| `RustSentinelBridge`: Named pipe bi-directional IPC |
 | | `core/ai_hedge_fund/auto_trader.py` | `AutoTrader`: Half-Kelly allocation, TSE 100-share lots & 6-tier exit rules |
-| | `core/ai_hedge_fund/broker_client.py` | `IBKRClient`: Server-side OCO orders, TSE tick table rounding & reconnect reconciliation |
+| | `core/ai_hedge_fund/broker_client.py` | `IBKRClient`: single-order adapter (no bracket), TSE tick table rounding & reconnect reconciliation; not wired |
 | | `core/ai_hedge_fund/concurrency_controller.py`| `ConcurrencyController`: Optimistic CAS concurrency locks |
 | | `core/ai_hedge_fund/idempotency_guard.py` | `OrderIdempotencyGuard`: Client Order ID deduplication |
 | **Memory & Graph** | `core/ai_hedge_fund/reflexion_engine.py` | `ReflexionEngine`: Post-mortem post-trade self-evaluation & 30-day time decay |

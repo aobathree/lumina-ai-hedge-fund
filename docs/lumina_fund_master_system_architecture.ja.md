@@ -186,9 +186,13 @@ Lumina Capital は、世界トップレベルのクオンツおよび分散シ�
 * 監視銘柄の200日線維持率（Breadth Ratio）を毎サイクル走査。
 * 全面安暴落相場（維持率45%未満）では最大保有枠を **6枠 ➔ 2枠** へ緊急縮小し、キャッシュを温存。
 
-### 5.5 サーバーサイドOCOブラケット注文 ＆ 冪等性ガード
-* **サーバーサイドOCO**:
-  発注時に「親注文（成行/指値）＋ 利確指値 ＋ 損切逆指値」をIBKR取引所サーバー上へ事前配置。VPSが万一シャットダウンしても、取引所側で資産が100%自動保護。
+### 5.5 発注 ＆ 冪等性ガード
+* **サーバーサイドOCO（ブラケット注文）は、この公開版では未実装**:
+  `IBKRClient.place_order` が送るのは成行または指値の 1 本だけ。利確と損切りの価格は呼値に丸めるが、注文としては送らない。損切りは 10 秒ごとの番犬ループがクライアント側で判定するので、プロセスが止まっている間、取引所側にポジションを守る注文は無い。戻り値は `bracket_attached: False` を持つ。
+* **受付の確認**:
+  `place_order` は注文が `PendingSubmit` を抜けるまで待ち、取消・無効・5 秒以内に受付を確認できない場合は `success: False` を返す。
+* **配線**:
+  `IBKRClient` はデーモンにも UI にも配線されていない。実際に動くブローカーは `PaperTradingEngine` だけ。
 * **OrderIdempotencyGuard (`idempotency_guard.py`)**:
   Client Order IDの事前永続化により、通信再接続時の二重発注を完全防止。さらに90秒以上経過した古いシグナルキューを自動破棄。
 
@@ -408,7 +412,7 @@ Lumina Capital は、世界トップレベルのクオンツおよび分散シ�
 | **執行・番犬** | `rust_sentinel/src/main.rs` | `lumina-sentinel-rs`: Pure Rust 3.6ns 番犬センチネル（タイムアウトバー監視） |
 | | `core/ai_hedge_fund/rust_sentinel_bridge.py`| `RustSentinelBridge`: Python ⇄ Rust 常駐パイプIPC |
 | | `core/ai_hedge_fund/auto_trader.py` | `AutoTrader`: 6重エグジット、ハーフケリー、14日タイムバリア摩耗防止ロック |
-| | `core/ai_hedge_fund/broker_client.py` | `IBKRClient`: サーバーサイドOCO ＆ 日次切断自動復帰 ＆ 東証呼値・単元株正規化 |
+| | `core/ai_hedge_fund/broker_client.py` | `IBKRClient`: 単発注文アダプタ（ブラケットなし・未配線） ＆ 日次切断自動復帰 ＆ 東証呼値・単元株正規化 |
 | | `core/ai_hedge_fund/concurrency_controller.py`| `ConcurrencyController`: CAS楽観ロック並行排他制御 |
 | | `core/ai_hedge_fund/idempotency_guard.py` | `OrderIdempotencyGuard`: Client Order ID二重発注防止 |
 | **記憶・グラフ** | `core/ai_hedge_fund/reflexion_engine.py` | `ReflexionEngine`: 事後解剖反省ループ ＆ 半減期30日指数時間減衰 |
