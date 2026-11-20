@@ -136,8 +136,9 @@ class LightGBMGatekeeper:
 
         # GEXレジーム
         gex_info = context_data.get("options_gex", {})
-        gex_reg = gex_info.get("market_turbulence", "")
-        gex_code = 1.0 if "安定" in gex_reg or "POSITIVE" in gex_reg else (-1.0 if "TURBULENCE" in gex_reg or "急変" in gex_reg else 0.0)
+        # 区分値で判定する（文言の部分一致は使わない）。キーが無ければ 0.0 = 不明
+        gex_turb = gex_info.get("is_turbulence")
+        gex_code = -1.0 if gex_turb is True else (1.0 if gex_turb is False else 0.0)
 
         # 財務指標
         try:
@@ -151,7 +152,7 @@ class LightGBMGatekeeper:
             roe_val = 10.0
 
         # マクロ
-        macro_code = 0.5 if "SUNNY" in str(context_data.get("macro_liquidity", {})) else 0.0
+        macro_code = 0.5 if str((context_data.get("macro_liquidity") or {}).get("regime", "")).upper() == "RISK_ON" else 0.0
         insider_boost = float(context_data.get("insider_trading", {}).get("score_boost", 0))
 
         # 正規化分位点特徴量 (Expected Move / Relative Uncertainty / Quantile Skew)

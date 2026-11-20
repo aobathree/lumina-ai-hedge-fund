@@ -65,7 +65,8 @@ class RiskManagerAgent(BaseInvestmentAgent):
         veto_reason = ""
         
         macro_liq = context_data.get("macro_liquidity", {}) if context_data else {}
-        is_crunch = macro_liq.get("liquidity_crunch", False) or macro_liq.get("net_liquidity_weather") == "TIGHTENING"
+        # MacroLiquidityFeed が返す区分値で判定する（RISK_OFF = 純流動性が前週比 -1% 以下）
+        is_crunch = str(macro_liq.get("regime", "")).upper() == "RISK_OFF"
         
         if is_turbulence and vol >= 30.0:
             veto_triggered = True
@@ -81,7 +82,8 @@ class RiskManagerAgent(BaseInvestmentAgent):
             veto_reason = "Quarantine protocol triggered: suspicious hype or malicious misinformation detected" if is_en else "不審な風説・煽りニュース検知による情報汚染遮断（検疫プロトコル発動）"
         else:
             # 🛡️ TSFM Out-of-Distribution (OOD) / Adversarial Divergence Veto Guard
-            qf = (context_data or {}).get("quantum_forecast", {})
+            # 合議が渡すキーは dual_quantum（DualQuantumForecaster の戻り値）
+            qf = (context_data or {}).get("dual_quantum") or {}
             tsfm_ret = float(qf.get("ensemble_expected_return_pct", 0.0) or 0.0)
             tsfm_status = str(qf.get("consensus_status", "NEUTRAL"))
             f_score_val = stock_data.get("piotroski_f_score")

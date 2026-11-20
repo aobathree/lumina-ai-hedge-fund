@@ -22,6 +22,8 @@ class MarketDataFeed:
     _dividend_cache: Dict[str, Any] = {}
     DIVIDEND_CACHE_TTL = 21600.0  # 6 hours cache for ex-dividend checks
     _split_cache: Dict[str, Any] = {}
+    _fscore_cache: Dict[str, Dict[str, Any]] = {}
+    FSCORE_CACHE_TTL = 86400.0  # 年次の財務諸表から出すので 24 時間
     SPLIT_CACHE_TTL = 21600.0  # 6 hours cache for stock split / reverse split checks
 
     @classmethod
@@ -282,6 +284,37 @@ class MarketDataFeed:
         return res
 
     @classmethod
+    def get_piotroski_f_score(cls, symbol: str, force_refresh: bool = False) -> Dict[str, Any]:
+        """
+        年次の財務諸表（直近 2 期）から Piotroski F-Score を計算する。
+
+        Returns: {"score": int | None, "criteria": {...}, "missing": [...], "error": str（失敗時）}
+        取得や計算に失敗したとき、項目が欠けたときは score=None（値を作らない）。
+        """
+        from core.ai_hedge_fund.piotroski import compute_f_score
+
+        norm_sym = cls.normalize_symbol(symbol)
+        now = time.time()
+        entry = cls._fscore_cache.get(norm_sym)
+        if not force_refresh and entry and (now - entry["cached_at"]) < cls.FSCORE_CACHE_TTL:
+            return entry["data"]
+
+        try:
+            ticker = yf.Ticker(norm_sym)
+            res = compute_f_score(ticker.financials, ticker.balance_sheet, ticker.cashflow)
+        except Exception as e:
+            # 失敗はキャッシュしない（次の呼び出しで取り直す）
+            return {"score": None, "criteria": {}, "missing": [], "error": f"{type(e).__name__}: {e}"}
+
+        cls._fscore_cache[norm_sym] = {"cached_at": now, "data": res}
+        # get_stock_data のキャッシュにも載せる（合議と CRO が stock_data から読む）
+        cached = cls._cache.get(norm_sym)
+        if cached:
+            cached["data"]["piotroski_f_score"] = res.get("score")
+            cached["data"]["piotroski_detail"] = res
+        return res
+
+    @classmethod
     def get_stock_data(cls, symbol: str, force_refresh: bool = False) -> Dict[str, Any]:
         """
         Fetch comprehensive real-time quotes, technical stats, and fundamentals.
@@ -326,6 +359,10 @@ class MarketDataFeed:
                 hist_metrics["sma_50"] = round(float(closes.tail(50).mean()), 2)
             if len(closes) >= 200:
                 hist_metrics["sma_200"] = round(float(closes.tail(200).mean()), 2)
+                # 取得した 1 年分の最初と最後の終値から出す（RS 順位の材料。200 本未満なら出さない）
+                first_close = float(closes.iloc[0])
+                if first_close > 0:
+                    hist_metrics["return_1y_pct"] = round((current / first_close - 1.0) * 100, 2)
             # Volatility (Annualized)
             daily_returns = closes.pct_change().dropna()
             if not daily_returns.empty:
@@ -421,6 +458,13 @@ class MarketDataFeed:
             "business_summary": info.get("longBusinessSummary", ""),
             "fetched_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
         }
+
+        # F-Score は財務諸表の取得が要るので、ここでは取りに行かない。
+        # get_piotroski_f_score() で計算済みなら、その結果だけを載せる（未計算ならキーを載せない）。
+        f_entry = cls._fscore_cache.get(norm_sym)
+        if f_entry and (now - f_entry["cached_at"]) < cls.FSCORE_CACHE_TTL:
+            data["piotroski_f_score"] = f_entry["data"].get("score")
+            data["piotroski_detail"] = f_entry["data"]
 
         # Cache result
         cls._cache[norm_sym] = {

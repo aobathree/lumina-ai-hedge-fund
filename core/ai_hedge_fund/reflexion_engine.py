@@ -165,7 +165,7 @@ class ReflexionEngine:
             from core.ai_hedge_fund.graphiti_memory_manager import GraphitiMemoryManager
             from core.ai_hedge_fund.macro_liquidity_feed import MacroLiquidityFeed
             stock_info = MarketDataFeed.get_stock_data(norm)
-            macro_stat = MacroLiquidityFeed.get_macro_status().get("macro_weather", "NEUTRAL")
+            macro_stat = MacroLiquidityFeed.get_macro_status().get("regime", "NEUTRAL")
             sector_name = stock_info.get("sector", "Equities")
 
             GraphitiMemoryManager.record_trade_episode(
