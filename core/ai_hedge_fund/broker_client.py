@@ -410,7 +410,10 @@ class PaperTradingEngine(BaseBrokerClient):
                     else:
                         target_price = round_price_to_exchange_tick(target_price, is_jp=is_jp)
 
-                    bracket_tag = f"[強制ブラケット逆指値付帯: {stop_loss_price:,.2f} {currency} (-13.0%)]"
+                    # ペーパー台帳に損切りラインを記録するだけで、取引所に置く注文ではない（番犬ループが監視する）。
+                    # 率は実際の値から出す（以前は常に -13.0% と表示していた）。
+                    sl_pct = (stop_loss_price / exec_price - 1.0) * 100.0 if exec_price else 0.0
+                    bracket_tag = f"[損切りライン記録: {stop_loss_price:,.2f} {currency} ({sl_pct:+.1f}% / クライアント側監視)]"
                     if bracket_tag not in notes:
                         notes = f"{notes} {bracket_tag}".strip()
 
@@ -1428,6 +1431,12 @@ class IBKRClient(BaseBrokerClient):
     _last_reconciled_at: float = 0.0
     _active_client_id: int = 1
 
+    # place_order が受付を確かめるときの状態の分類（ib_insync の OrderStatus）
+    ORDER_ACCEPTED_STATUSES = ("PreSubmitted", "Submitted", "Filled")
+    ORDER_PENDING_STATUSES = ("", "PendingSubmit", "ApiPending")
+    ORDER_ACK_POLL_SECONDS = 0.25
+    ORDER_ACK_TIMEOUT_SECONDS = 5.0
+
     def _reconcile_after_reconnect(self, ib) -> Dict[str, Any]:
         """
         Reconciles live IBKR positions, open OCO bracket orders, and executions
@@ -1571,12 +1580,62 @@ class IBKRClient(BaseBrokerClient):
                 order = ib_insync.MarketOrder(action, quantity)
 
             trade = ib.placeOrder(contract, order)
-            ib.sleep(0.5)
+
+            # 受け付けられたかを確かめてから結果を返す。
+            # PendingSubmit（送ったが応答なし）の間は待ち、時間内に抜けなければ「未確認」として失敗を返す。
+            status = ""
+            waited = 0.0
+            while True:
+                ib.sleep(self.ORDER_ACK_POLL_SECONDS)
+                waited += self.ORDER_ACK_POLL_SECONDS
+                status = str(getattr(trade.orderStatus, "status", "") or "")
+                if status not in self.ORDER_PENDING_STATUSES or waited >= self.ORDER_ACK_TIMEOUT_SECONDS:
+                    break
+
+            order_id = getattr(trade.order, "orderId", None)
+            # 送るのは親注文 1 本だけ。損切り・利確の注文は取引所に置いていない。
+            protection_note = ""
+            if stop_loss_price or target_price:
+                protection_note = (
+                    f" [損切り {stop_loss_price} / 利確 {target_price} は取引所に置いていません。"
+                    "クライアント側の監視でのみ判定されます]"
+                )
+            result_base = {
+                "order_id": order_id,
+                "status": status,
+                "bracket_attached": False,
+                "stop_loss_on_exchange": False,
+                "filled_quantity": float(getattr(trade.orderStatus, "filled", 0.0) or 0.0),
+                "avg_fill_price": float(getattr(trade.orderStatus, "avgFillPrice", 0.0) or 0.0),
+            }
+
+            if status in self.ORDER_ACCEPTED_STATUSES:
+                return {
+                    **result_base,
+                    "success": True,
+                    "message": f"IBKR発注受付: {norm_sym} {action} {quantity}株 ({order_type}) 状態={status}" + protection_note,
+                }
+
+            last_log = ""
+            try:
+                if getattr(trade, "log", None):
+                    last_log = str(getattr(trade.log[-1], "message", "") or "")
+            except Exception:
+                last_log = ""
+            if status in self.ORDER_PENDING_STATUSES:
+                return {
+                    **result_base,
+                    "success": False,
+                    "unconfirmed": True,
+                    "message": (
+                        f"IBKR発注未確認: {norm_sym} {action} {quantity}株 は {waited:.1f} 秒以内に受付が確認できませんでした"
+                        f"（状態={status or '不明'}）。注文が生きている可能性があるため、照合するまで再送しないでください。"
+                    ),
+                }
             return {
-                "success": True,
-                "order_id": trade.order.orderId,
-                "status": trade.orderStatus.status,
-                "message": f"IBKR発注完了: {norm_sym} {action} {quantity}株 ({order_type})" + (f" [ブラケット逆指値: {stop_loss_price}]" if stop_loss_price else "")
+                **result_base,
+                "success": False,
+                "message": f"IBKR発注不成立: {norm_sym} {action} {quantity}株 状態={status or '不明'}" + (f" ({last_log})" if last_log else ""),
             }
         except Exception as e:
             return {

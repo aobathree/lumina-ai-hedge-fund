@@ -83,7 +83,7 @@ How Lumina Capital compares against leading open-source financial agent framewor
 | **Cross-Asset Covariance** | ❌ None | ❌ None | **✅ Hayashi-Yoshida Async + Higham (2002) PSD Projection** |
 | **Time-Series Foundation AI** | ❌ None | ❌ None | **✅ Google TimesFM & Chronos Fan Charts** |
 | **Episodic & Causal Memory** | ❌ None | ❌ None | **✅ SQLite FTS5 (`bm25()`, 30d Decay) + Neo4j 3D** |
-| **Execution Realism & Concurrency** | ❌ Terminal print only | ⚠️ Simple backtest | **✅ SQLite WAL, Single-Writer Queue, CAS Lock, OCO Bracket** |
+| **Execution Realism & Concurrency** | ❌ Terminal print only | ⚠️ Simple backtest | **✅ SQLite WAL, Single-Writer Queue, CAS Lock** (paper trading; see note below) |
 | **Exchange Order Conformance** | ❌ Raw floats | ❌ Raw floats | **✅ TSE Tick Size Table (1/5/10/50/100 JPY) & 100-Share Lots** |
 | **Low-Latency Risk Sentinel** | ❌ None | ❌ None | **✅ `#![forbid(unsafe_code)]` Rust SoA (`3.63ns`/pos)** |
 | **Institutional Audit & Stress Tests** | ❌ None | ❌ None | **✅ 100/100 Pass (20 Adversarial Audits, Ruin Prob 0.00%)** |
@@ -116,7 +116,7 @@ flowchart TD
         D1["Deep Deliberation Loop (15 min + CAS Lock)"]
         D2["Pure Rust SoA Sentinel (lumina-sentinel-rs: 3.63ns/pos)"]
         D3["High-Fidelity Paper Trading (SQLite WAL)"]
-        D4["IBKR OCA Bracket Order Adapter"]
+        D4["IBKR Order Adapter (single order, experimental, not wired)"]
     end
 
     subgraph KnowledgeMemory ["5. FTS5 BM25 & 3D Causal Knowledge Graph"]
@@ -184,6 +184,12 @@ To meet the rigorous quantitative due-diligence standards of institutional alloc
 > 📖 *For complete mathematical formulas, individual trade logs, and econometric derivation tables, see the [📖 Master Architecture & Math Specification (docs/lumina_fund_master_system_architecture.md)](docs/lumina_fund_master_system_architecture.md) and [🇯🇵 完全仕様書 (docs/lumina_fund_master_system_architecture.ja.md)](docs/lumina_fund_master_system_architecture.ja.md).*
 
 ---
+
+> **Which broker actually runs.** In this public release the only broker wired into the daemon and the dashboard is
+> `PaperTradingEngine` (SQLite paper trading). `IBKRClient` and `KabuStationClient` are not instantiated anywhere.
+> `IBKRClient.place_order` sends a single market or limit order and does **not** attach take-profit or stop-loss
+> orders; `KabuStationClient.place_order` always returns `success: False`. Stops are evaluated client-side by the
+> 10-second watchdog loop, so nothing protects a position on the exchange while the process is down.
 
 ## ⚡ Quickstart
 
