@@ -6,6 +6,7 @@ applies quantitative mathematical pre-filtering, and uses Gemini 3.7 Flash
 to curate the "Weekly Top 5 Alpha Portfolio Picks" for Monday morning.
 """
 
+from core.ai_hedge_fund import llm_client
 import os
 import time
 import json
@@ -259,7 +260,7 @@ class AlphaResearcher:
     ) -> Dict[str, Any]:
         """Synthesize final Weekly Top 5 Alpha Picks using Gemini 3.7 Flash"""
         cfg = load_app_settings()
-        api_key = cfg.get("google_api_key", "")
+        api_key = llm_client.resolve_api_key(cfg)
         now_str = time.strftime("%Y-%m-%d %H:%M:%S")
 
         def _fmt_bt(c):
@@ -278,7 +279,7 @@ class AlphaResearcher:
 
         if api_key:
             try:
-                client = genai.Client(api_key=api_key)
+                client = llm_client.make_client(api_key)
                 prompt = f"""あなたはヘッジファンド Lumina Capital のCIO（最高投資責任者）です。
 市場が閉まっている週末に、日米100銘柄ユニバースから定量スクリーニングと【過去2年Walk-Forwardバックテスト検証】を通過した上位候補群を精査し、
 月曜朝の市場オープン時に推奨する【今週の特選アルファ銘柄 Top 5】を決定してください。

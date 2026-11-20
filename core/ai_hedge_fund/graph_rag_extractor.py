@@ -6,6 +6,7 @@ and macroeconomic transmission linkages from unstructured news and SEC filings.
 Persists living causal subgraphs directly into Neo4j for 3D visualization and CRO risk traversal.
 """
 
+from core.ai_hedge_fund import llm_client
 import os
 import sys
 import json
@@ -64,7 +65,7 @@ class GraphRAGExtractor:
         Uses Gemini 3.8 Flash to extract structured corporate dependencies from news or filings.
         """
         cfg = load_app_settings()
-        api_key = cfg.get("google_api_key", "")
+        api_key = llm_client.resolve_api_key(cfg)
         if not api_key or len(text_content.strip()) < 30:
             return []
 
@@ -88,7 +89,7 @@ class GraphRAGExtractor:
   }}
 ]"""
         try:
-            client = genai.Client(api_key=api_key)
+            client = llm_client.make_client(api_key)
             res = client.models.generate_content(
                 model="gemini-3.8-flash",
                 contents=prompt,

@@ -1,6 +1,6 @@
 # trial ブランチ（試運転用）
 
-upstream `main`（`d2a29ef`）に、次の 6 本をマージした実行用のブランチ。upstream には無い。
+upstream `main`（`d2a29ef`）に、次の 7 本をマージした実行用のブランチ。upstream には無い。
 
 | ブランチ | 中身 |
 | --- | --- |
@@ -10,6 +10,7 @@ upstream `main`（`d2a29ef`）に、次の 6 本をマージした実行用の�
 | `fix/issue-7-timesfm-label` | 予測のバックエンドに合わせた表示（#7） |
 | `fix/issue-9-ibkr-bracket` | IBKR の戻り値と文書（#9） |
 | `feat/webull-intents` | Webull 向けに「発注の意図」を書き出すブローカー |
+| `feat/claude-llm-1password` | LLM の呼び出しに Claude を使う。鍵は 1Password の秘密参照で渡せる |
 
 ## 準備
 
@@ -64,6 +65,24 @@ Webull の API は呼ばない。データは yfinance と FRED から取る。L
 ```bash
 .venv/bin/python scripts/trial_cycle.py status
 ```
+
+## LLM（Claude）を使う
+
+鍵は 1Password の秘密参照で渡す。`.env.op.sample` を `.env.op` に写し、参照を自分の保管庫のものに直す（`.env.op` は git に入らない）。
+
+```bash
+op run --env-file .env.op -- .venv/bin/python scripts/trial_cycle.py run --ignore-hours
+```
+
+`op run` を使わず、`.env` に `ANTHROPIC_API_KEY=op://…` と書いてもよい。その場合は、最初の LLM 呼び出しのときに `op read` で解決する。どちらでも、1Password のアプリのアンロックと承認が要る。
+
+| 変数 | 既定 | 意味 |
+| --- | --- | --- |
+| `LUMINA_LLM_PROVIDER` | `auto` | `auto` = Claude の鍵が解決できれば Claude、できなければ Gemini / `claude` / `gemini` |
+| `LUMINA_CLAUDE_MODEL` | `claude-opus-5-5` | 合議の 1 銘柄で、投資家役 7 回と討論などの呼び出しが出る。費用を抑えるなら `claude-sonnet-5-5` や `claude-haiku-5-5` |
+| `LUMINA_CLAUDE_EFFORT` | `medium` | `low` / `medium` / `high` / `xhigh` / `max` |
+
+鍵が解決できないときは、参照の文字列を鍵として送らず、合議は縮退モードで動く。
 
 ## ダッシュボード
 

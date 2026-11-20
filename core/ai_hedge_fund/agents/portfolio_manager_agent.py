@@ -1,3 +1,4 @@
+from core.ai_hedge_fund import llm_client
 import json
 from typing import Dict, Any, List, Optional
 from core.state_manager import load_app_settings
@@ -239,7 +240,7 @@ class PortfolioManagerAgent:
             )
         try:
             cfg = load_app_settings()
-            api_key = cfg.get("google_api_key", "")
+            api_key = llm_client.resolve_api_key(cfg)
             if api_key:
                 from google import genai
                 
@@ -260,7 +261,7 @@ class PortfolioManagerAgent:
                 if regime_info:
                     regime_section = f"\n市場レジーム: {regime_info.get('regime_name')} ({regime_info.get('rationale')})"
 
-                client = genai.Client(api_key=api_key)
+                client = llm_client.make_client(api_key)
                 prompt = f"""銘柄: {name}
 総合判定: {action_label} (総合確信度スコア: {overall_score}点){regime_section}
 

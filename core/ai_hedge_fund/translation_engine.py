@@ -1,3 +1,4 @@
+from core.ai_hedge_fund import llm_client
 import os
 import re
 import json
@@ -220,19 +221,17 @@ class TranslationEngine:
             return cached
 
         # Fast Gemini LLM Translation
-        key = api_key or os.getenv("GEMINI_API_KEY", "")
+        key = api_key
         if not key:
             try:
-                from core.state_manager import load_app_settings
-                cfg = load_app_settings()
-                key = cfg.get("google_api_key", "")
+                key = llm_client.resolve_api_key()
             except Exception:
                 pass
 
         if key:
             try:
                 from google import genai
-                client = genai.Client(api_key=key)
+                client = llm_client.make_client(key)
                 prompt = (
                     "Translate the following Japanese investment analysis / reflection text to natural, professional English "
                     "fit for an elite Wall Street quantitative hedge fund dashboard. "

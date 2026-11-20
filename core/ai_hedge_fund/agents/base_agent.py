@@ -1,3 +1,4 @@
+from core.ai_hedge_fund import llm_client
 import json
 import os
 import re
@@ -205,14 +206,14 @@ class BaseInvestmentAgent:
             return None
         try:
             cfg = load_app_settings()
-            api_key = cfg.get("google_api_key", "")
+            api_key = llm_client.resolve_api_key(cfg)
             if not api_key:
                 return None
             
             from google import genai
             from google.genai import types
             
-            client = genai.Client(api_key=api_key)
+            client = llm_client.make_client(api_key)
             config = types.GenerateContentConfig(
                 system_instruction=cls.get_system_prompt(),
                 temperature=0.7,
