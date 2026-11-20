@@ -132,7 +132,8 @@ class LightGBMGatekeeper:
         ll_sig = lead_lag_data.get("lead_lag_signal", "NEUTRAL")
         ll_code_map = {"BULLISH_LAG": 1.0, "BEARISH_LAG": -1.0, "NEUTRAL": 0.0, "UNCORRELATED": 0.0}
         ll_code = ll_code_map.get(ll_sig, 0.0)
-        ll_corr = float(lead_lag_data.get("correlation", 0.0))
+        # 判定不能（None / UNKNOWN）は 0.0 = 寄与なしとして扱う
+        ll_corr = float(lead_lag_data.get("correlation") or 0.0)
 
         # GEXレジーム
         gex_info = context_data.get("options_gex", {})
