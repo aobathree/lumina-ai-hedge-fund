@@ -6,6 +6,7 @@ Google TimesFM × Amazon Chronos の数理合意シグナルを受け取り、
 CRO（リスク管理官）による証拠審査ループ ➔ CIOルミナの最終統括決議を自動オーケストレーション。
 """
 
+from core.ai_hedge_fund import llm_client
 import os
 import json
 import time
@@ -50,10 +51,10 @@ class LuminaLangGraphCouncil:
     @classmethod
     def _get_genai_client(cls):
         cfg = load_app_settings()
-        api_key = cfg.get("google_api_key", "")
+        api_key = llm_client.resolve_api_key(cfg)
         if not api_key:
             return None
-        return genai.Client(api_key=api_key)
+        return llm_client.make_client(api_key)
 
     # ----------------------------------------------------
     # Node 1: Gather Dual Quantum Forecast + Lead-Lag + LightGBM Gate

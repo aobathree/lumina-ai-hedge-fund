@@ -1,3 +1,4 @@
+from core.ai_hedge_fund import llm_client
 import json
 import time
 import os
@@ -444,12 +445,12 @@ class HedgeFundCouncil:
             }
 
         cfg = load_app_settings()
-        api_key = cfg.get("google_api_key", "")
+        api_key = llm_client.resolve_api_key(cfg)
         if not api_key:
             return {"occurred": False, "reason": "APIキー未設定のため直接討論をスキップ"}
 
         try:
-            client = genai.Client(api_key=api_key)
+            client = llm_client.make_client(api_key)
             name = stock_data.get("name") or stock_data.get("company_name", "対象銘柄")
             symbol = stock_data.get("symbol", "")
             price = stock_data.get("current_price", 100.0)

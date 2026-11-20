@@ -33,3 +33,6 @@ Thumbs.db
 *.egg-info/
 build/
 dist/
+
+# 1Password の参照（保管庫とアイテムの名前が入る）
+.env.op
