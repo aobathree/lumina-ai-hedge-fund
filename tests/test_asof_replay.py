@@ -200,9 +200,18 @@ def test_download_shape(state):
     assert df["Close"]["AAPL"].dropna().index[-1] == pd.Timestamp("2026-11-19")
 
 
-def test_live_router(jq_root, monkeypatch):
+def test_live_router(jq_root, tmp_path, monkeypatch):
     import yfinance as yf
+    from core.ai_hedge_fund import data_sources
+
     monkeypatch.setattr(yf, "Ticker", _FakeReal)
+    monkeypatch.setattr(yf, "download", yf.download)  # install() が差し替えるので、テストの後に戻す
+    # 手元の控え（.trial/alpaca）や鍵に左右されないよう、Alpaca は空の置き場にし、振り分けの状態も毎回作り直す
+    monkeypatch.setenv("LUMINA_DATA_SOURCES", "auto")
+    monkeypatch.setenv("LUMINA_ALPACA_DIR", str(tmp_path / "no-alpaca"))
+    monkeypatch.delenv("ALPACA_API_KEY_ID", raising=False)
+    monkeypatch.delenv("ALPACA_API_SECRET_KEY", raising=False)
+    monkeypatch.setattr(data_sources, "_STATE", {})
     jqs.install_yfinance_router(jq_root)
     assert isinstance(yf.Ticker("7203.T"), jqs.JQuantsTicker)
     assert isinstance(yf.Ticker("AAPL"), _FakeReal)
