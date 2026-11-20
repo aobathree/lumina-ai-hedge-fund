@@ -990,10 +990,11 @@ class FundContentGenerator:
             q_metrics = QuantReporter.compute_metrics(q_rets, broker_engine=engine)
             quant_stat_line = q_metrics.get(
                 "summary_line",
-                "・クオンツ運用フェーズ: 実戦稼働 5営業日目 ｜ 確定損益: +$4.58 ｜ 決済勝率: 100% (1勝0敗) ｜ 最大DD: -1.04%"
+                "・クオンツ指標: 取得できませんでした（実績の数値は記載しないこと）"
             )
-        except Exception:
-            quant_stat_line = "・クオンツ運用フェーズ: 実戦稼働 5営業日目 ｜ 確定損益: +$4.58 ｜ 決済勝率: 100% (1勝0敗) ｜ 最大DD: -1.04%"
+        except Exception as q_err:
+            print(f"[FundContentGenerator] QuantReporter metrics unavailable: {q_err}")
+            quant_stat_line = "・クオンツ指標: 取得できませんでした（実績の数値は記載しないこと）"
 
         # 📡 OpenBB Platform (v4/v5) 機関投資家データOS 速報インテル取得
         openbb_news_lines = []

@@ -15,6 +15,38 @@ import streamlit as st
 
 logger = logging.getLogger(__name__)
 
+
+EXIT_TRADE_TYPES_EXCLUDED = ("BUY_ENTRY",)
+
+
+def closed_trades_from_engine(broker_engine, limit: int = 1000) -> list:
+    """
+    台帳（trade_memories）から、決済した取引の記録を返す。
+    買いの記録（BUY_ENTRY）は除く。realized_pnl は銘柄の通貨建て。
+    取れなければ空のリスト。
+    """
+    getter = getattr(broker_engine, "get_trade_memories", None)
+    if getter is None:
+        return []
+    rows = getter(limit=limit) or []
+    out = []
+    for r in rows:
+        if str(r.get("trade_type", "")).upper() in EXIT_TRADE_TYPES_EXCLUDED:
+            continue
+        if r.get("realized_pnl") is None:
+            continue
+        out.append(r)
+    return out
+
+
+def _is_newest_first(eq_data) -> bool:
+    """get_equity_curve の並びが新しい順かどうか（timestamp で判定。判定できなければ False）。"""
+    try:
+        return str(eq_data[0].get("timestamp")) > str(eq_data[-1].get("timestamp"))
+    except Exception:
+        return False
+
+
 class QuantReporter:
     @staticmethod
     def get_returns_series_from_engine(broker_engine) -> pd.Series:
@@ -49,40 +81,36 @@ class QuantReporter:
         otherwise compute 100% real trade-based warmup statistics.
         """
         # 1. Gather real trading facts from engine if provided
-        days_active = len(rets) + 1 if (rets is not None and len(rets) > 0) else 5
-        orders = []
-        realized_pnl_usd = 0.0
+        days_active = len(rets) + 1 if (rets is not None and len(rets) > 0) else None
+        realized_pnl_by_ccy: Dict[str, float] = {}
         win_trades = 0
         loss_trades = 0
         closed_trades = 0
-        mdd = 0.0
+        mdd: Optional[float] = None
 
         if broker_engine:
             try:
                 eq_data = broker_engine.get_equity_curve(limit=500)
-                if eq_data:
-                    equities = [float(x.get("total_equity_jpy", 0)) for x in eq_data if x.get("total_equity_jpy")]
-                    if equities:
-                        peak = max(equities)
-                        trough = min(equities)
-                        mdd = ((trough - peak) / peak * 100.0) if peak > 0 else 0.0
+                equities = [float(x.get("total_equity_jpy", 0)) for x in (eq_data or []) if x.get("total_equity_jpy")]
+                if len(equities) >= 2:
+                    # 時系列順のピークからの最大下落率（単純な max / min ではない）
+                    eq = pd.Series(equities[::-1] if _is_newest_first(eq_data) else equities)
+                    mdd = float(((eq - eq.cummax()) / eq.cummax()).min() * 100.0)
 
-                if hasattr(broker_engine, "get_order_history"):
-                    orders = broker_engine.get_order_history(limit=100)
-                    for o in orders:
-                        if o.get("side") == "SELL":
-                            closed_trades += 1
-                            notes = str(o.get("notes", ""))
-                            if "+" in notes or "利確" in notes or "勝ち" in notes or "プラス" in notes:
-                                win_trades += 1
-                                if "USD" in notes or "$" in notes:
-                                    realized_pnl_usd += 4.58
-                            elif "-" in notes or "損切り" in notes or "ロスカット" in notes:
-                                loss_trades += 1
+                # 勝敗と確定損益は、台帳に記録された realized_pnl から数える（注文メモの文字では判定しない）
+                for t in closed_trades_from_engine(broker_engine):
+                    pnl = float(t.get("realized_pnl") or 0.0)
+                    closed_trades += 1
+                    if pnl > 0:
+                        win_trades += 1
+                    elif pnl < 0:
+                        loss_trades += 1
+                    ccy = str(t.get("currency") or "USD")
+                    realized_pnl_by_ccy[ccy] = realized_pnl_by_ccy.get(ccy, 0.0) + pnl
             except Exception as e:
                 logger.warning(f"Failed to gather broker engine facts: {e}")
 
-        win_rate = (win_trades / closed_trades * 100.0) if closed_trades > 0 else 100.0
+        win_rate: Optional[float] = (win_trades / closed_trades * 100.0) if closed_trades > 0 else None
 
         # 2. If we have at least 15 daily return data points, calculate QuantStats
         if rets is not None and len(rets) >= 15:
@@ -111,13 +139,23 @@ class QuantReporter:
             except Exception as e:
                 logger.warning(f"Quantstats computation failed: {e}")
 
-        # 3. 100% Genuine Warm-up Performance Reporting
-        pnl_str = f"+${realized_pnl_usd:,.2f}" if realized_pnl_usd > 0 else (f"${realized_pnl_usd:,.2f}" if realized_pnl_usd < 0 else "+$4.58")
-        win_cnt = max(1, win_trades)
-        loss_cnt = loss_trades
+        # 3. Warm-up reporting: 実績が無い項目は「実績なし」と出す（数字を作らない）
+        def _money(ccy: str, v: float) -> str:
+            sym = "¥" if ccy == "JPY" else ("€" if ccy == "EUR" else "$")
+            sign = "+" if v > 0 else ("-" if v < 0 else "±")
+            return f"{sign}{sym}{abs(v):,.0f}" if ccy == "JPY" else f"{sign}{sym}{abs(v):,.2f}"
+
+        if closed_trades > 0:
+            pnl_str = " / ".join(_money(c, v) for c, v in sorted(realized_pnl_by_ccy.items()))
+            wr_str = f"{win_rate:.0f}% ({win_trades}勝{loss_trades}敗)"
+        else:
+            pnl_str = "実績なし"
+            wr_str = "実績なし（決済 0 件）"
+        days_str = f"{days_active}営業日目" if days_active is not None else "記録なし"
+        mdd_str = f"{mdd:.2f}%" if mdd is not None else "算出不能"
         summary_line = (
-            f"・クオンツ運用フェーズ: 実戦稼働 {days_active}営業日目（初期資産形成期） ｜ "
-            f"確定損益: {pnl_str} ｜ 決済勝率: {win_rate:.0f}% ({win_cnt}勝{loss_cnt}敗) ｜ 最大DD: {mdd:.2f}%"
+            f"・クオンツ運用フェーズ: 実戦稼働 {days_str}（初期資産形成期） ｜ "
+            f"確定損益: {pnl_str} ｜ 決済勝率: {wr_str} ｜ 最大DD: {mdd_str}"
         )
 
         return {
@@ -126,15 +164,16 @@ class QuantReporter:
             "sharpe": "蓄積中",
             "sortino": "蓄積中",
             "calmar": "蓄積中",
-            "max_drawdown": round(mdd, 2),
-            "win_rate": round(win_rate, 1),
+            "max_drawdown": round(mdd, 2) if mdd is not None else None,
+            "win_rate": round(win_rate, 1) if win_rate is not None else None,
             "volatility": "蓄積中",
             "cagr": "蓄積中",
-            "profit_factor": "1.00",
+            "profit_factor": "蓄積中",
             "closed_trades": closed_trades,
-            "win_trades": win_cnt,
-            "loss_trades": loss_cnt,
-            "realized_pnl_usd": realized_pnl_usd,
+            "win_trades": win_trades,
+            "loss_trades": loss_trades,
+            "realized_pnl_by_currency": realized_pnl_by_ccy,
+            "realized_pnl_usd": realized_pnl_by_ccy.get("USD", 0.0),
             "summary_line": summary_line
         }
 
@@ -169,7 +208,8 @@ class QuantReporter:
             logger.warning(f"Failed to generate monthly table: {e}")
 
         # Real cumulative return for current month
-        cum_ret = ((1 + rets).prod() - 1.0) * 100.0 if (rets is not None and not rets.empty) else 1.83
+        # リターンの記録が無いときは NaN（表示側で「実績なし」にする）
+        cum_ret = ((1 + rets).prod() - 1.0) * 100.0 if (rets is not None and not rets.empty) else float('nan')
         return pd.DataFrame({curr_m: [round(cum_ret, 2)], '通算 (Year)': [round(cum_ret, 2)]}, index=[curr_y])
 
     @classmethod
@@ -226,7 +266,7 @@ class QuantReporter:
         Full Streamlit rendering component for Tab 2: KPI summary + Monthly Returns Heatmap.
         """
         rets = cls.get_returns_series_from_engine(broker_engine)
-        metrics = cls.compute_metrics(rets)
+        metrics = cls.compute_metrics(rets, broker_engine=broker_engine)
         
         # 1. Institutional KPI Cards
         st.markdown("""
@@ -240,7 +280,7 @@ class QuantReporter:
         qc1.metric("シャープレシオ (Sharpe)", f"{metrics['sharpe']}", help="リスク（価格変動）に対してどれだけ効率よく利益を出せているか。2.0超で超一流ファンド水準。")
         qc2.metric("ソルティノレシオ (Sortino)", f"{metrics['sortino']}", help="下落リスク（ダウンサイド）のみを考慮した真の運用効率。")
         qc3.metric("Calmar レシオ", f"{metrics['calmar']}", help="年間成長率(CAGR) ÷ 最大ドローダウン。大きいほど暴落耐性が高い。")
-        qc4.metric("最大ドローダウン (MDD)", f"{metrics['max_drawdown']:.2f}%", help="資産ピークから最大で何％落ち込んだか。マイナスが浅いほど優秀。")
+        qc4.metric("最大ドローダウン (MDD)", (f"{metrics['max_drawdown']:.2f}%" if metrics.get('max_drawdown') is not None else "算出不能"), help="資産ピークから最大で何％落ち込んだか。マイナスが浅いほど優秀。")
         qc5.metric("プロフィットファクター (PF)", f"{metrics['profit_factor']}", help="総利益 ÷ 総損失。1.5以上でヘッジファンド級。")
 
         # 2. Monthly Returns Heatmap Table
@@ -260,7 +300,7 @@ class QuantReporter:
                 else:
                     return "background-color: #1e293b; color: #cbd5e1;"
 
-            styled_df = table.style.format("{:+.1f}%").map(style_heatmap)
+            styled_df = table.style.format("{:+.1f}%", na_rep="実績なし").map(style_heatmap)
             st.dataframe(styled_df, use_container_width=True)
             
             # Export Heatmap Image Button

@@ -1236,7 +1236,7 @@ class GraphitiMemoryManager:
                     })
 
                 # 3. LeadLagRelation Node
-                if lead_lag_data:
+                if lead_lag_data and lead_lag_data.get("available", True) and lead_lag_data.get("correlation") is not None:
                     cypher_ll = """
                     MATCH (s:Stock {symbol: $ticker})
                     MERGE (bm:MacroBenchmark {symbol: $bm_sym})
@@ -1258,9 +1258,10 @@ class GraphitiMemoryManager:
                         "bm_sym": lead_lag_data.get("benchmark_symbol", "^GSPC"),
                         "bm_name": lead_lag_data.get("benchmark_name", "Global Benchmark"),
                         "ll_id": ll_id,
-                        "lag_days": int(lead_lag_data.get("optimal_lag_days", 1)),
-                        "corr": float(lead_lag_data.get("correlation", 0.0)),
-                        "p_val": float(lead_lag_data.get("granger_pvalue", 0.05)),
+                        "lag_days": int(lead_lag_data.get("optimal_lag_days") or 0),
+                        "corr": float(lead_lag_data.get("correlation")),
+                        # p 値が未算出のときは null を入れる（0.05 などの値を作らない）
+                        "p_val": (float(lead_lag_data["granger_pvalue"]) if lead_lag_data.get("granger_pvalue") is not None else None),
                         "sig": lead_lag_data.get("lead_lag_signal", "NEUTRAL"),
                         "badge": lead_lag_data.get("signal_badge", "")
                     })
