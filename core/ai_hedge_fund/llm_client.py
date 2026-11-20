@@ -36,6 +36,28 @@ _op_failed_at: Dict[str, float] = {}
 _anthropic_clients: Dict[str, Any] = {}
 
 
+# Claude の呼び出しの回数とトークン数（このプロセスの中の合計）。費用の見積もりに使う
+USAGE: Dict[str, int] = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "errors": 0}
+
+
+def _record_usage(response: Any) -> None:
+    usage = getattr(response, "usage", None)
+    with _lock:
+        USAGE["calls"] += 1
+        for key in ("input_tokens", "output_tokens", "cache_read_input_tokens"):
+            USAGE[key] += int(getattr(usage, key, 0) or 0)
+
+
+def _count_error() -> None:
+    with _lock:
+        USAGE["errors"] += 1
+
+
+def usage_snapshot() -> Dict[str, int]:
+    with _lock:
+        return dict(USAGE)
+
+
 class LlmCallError(RuntimeError):
     """Claude の呼び出しの失敗。メッセージに HTTP の状態や種類を入れる（呼ぶ側が文字列で見分けている）。"""
 
@@ -175,17 +197,23 @@ def claude_generate(prompt: str, system: Optional[str] = None, want_json: bool =
         else:
             response = client.messages.create(**kwargs)
     except anthropic.RateLimitError as e:
+        _count_error()
         raise LlmCallError(f"429 rate limit (Claude): {e.message}") from e
     except anthropic.AuthenticationError as e:
+        _count_error()
         raise LlmCallError("401 authentication (Claude): 鍵が無効") from e
     except anthropic.APIStatusError as e:
+        _count_error()
         kind = "503 unavailable" if e.status_code >= 500 else f"{e.status_code} error"
         raise LlmCallError(f"{kind} (Claude): {e.message}") from e
     except anthropic.APITimeoutError as e:
+        _count_error()
         raise LlmCallError("timeout (Claude)") from e
     except anthropic.APIConnectionError as e:
+        _count_error()
         raise LlmCallError("unavailable: connection error (Claude)") from e
 
+    _record_usage(response)
     if response.stop_reason == "refusal":
         category = getattr(getattr(response, "stop_details", None), "category", None)
         raise LlmCallError(f"refusal (Claude): category={category}")
