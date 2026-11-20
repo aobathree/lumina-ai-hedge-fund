@@ -16,6 +16,7 @@ from core.ai_hedge_fund.market_data_feed import MarketDataFeed
 from core.ai_hedge_fund.market_screener import MarketScreener
 from core.ai_hedge_fund.agents.portfolio_manager_agent import PortfolioManagerAgent
 from core.ai_hedge_fund.macro_liquidity_feed import MacroLiquidityFeed
+from core.ai_hedge_fund.feed_schemas import build_gex_context
 from core.ai_hedge_fund.options_gex_feed import OptionsGexFeed
 from core.state_manager import load_app_settings
 from google import genai
@@ -135,7 +136,7 @@ class AlphaResearcher:
         turb = OptionsGexFeed.get_market_turbulence_warning()
         context_data = {
             "macro_liquidity": macro,
-            "options_gex": {"market_turbulence": turb.get("summary_text")}
+            "options_gex": build_gex_context(turb)
         }
         regime_info = PortfolioManagerAgent.detect_market_regime(context_data)
 

@@ -77,6 +77,7 @@ class MacroLiquidityFeed:
                 emoji = "⚖️"
 
             status = {
+                "available": True,
                 "net_liquidity_t": round(cur_net_liq_t, 2),
                 "prev_net_liquidity_t": round(prev_net_liq_t, 2),
                 "chg_t": round(chg_t, 2),
@@ -97,6 +98,7 @@ class MacroLiquidityFeed:
 
         except Exception as e:
             fallback = {
+                "available": False,
                 "net_liquidity_t": 5.80,
                 "prev_net_liquidity_t": 5.80,
                 "chg_t": 0.0,

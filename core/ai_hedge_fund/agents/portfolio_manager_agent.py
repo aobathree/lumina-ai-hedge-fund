@@ -1,6 +1,7 @@
 import json
 from typing import Dict, Any, List, Optional
 from core.state_manager import load_app_settings
+from core.ai_hedge_fund.feed_schemas import MACRO_REGIME_NEUTRAL, MACRO_REGIME_RISK_ON, MACRO_REGIME_RISK_OFF
 
 class PortfolioManagerAgent:
     """
@@ -23,25 +24,14 @@ class PortfolioManagerAgent:
         """
         macro = (context_data or {}).get("macro_liquidity", {})
         gex = (context_data or {}).get("options_gex", {})
-        mkt_turb = str(gex.get("market_turbulence", ""))
-        ticker_gex = str(gex.get("ticker_gex", ""))
-        summary_hl = str(macro.get("summary_headline", ""))
-        status = str(macro.get("status", "NORMAL"))
-        trend = str(macro.get("net_liquidity_trend", "FLAT"))
-
-        is_turbulent = (
-            "警戒" in mkt_turb or "乱流" in mkt_turb or "ネガティブガンマ" in mkt_turb or
-            "急変" in mkt_turb or "CRITICAL" in status.upper() or 
-            ("SHRINKING" in trend.upper() and "ALERT" in mkt_turb.upper())
-        )
-        is_bull_liquidity = (
-            ("EXPANDING" in trend.upper() or "増加" in trend or "良好" in summary_hl or "金余り" in summary_hl or "NORMAL" in status.upper())
-            and not is_turbulent
-        )
-        is_tightening = (
-            ("引き締め" in summary_hl or "収縮" in summary_hl or "縮小" in trend or "CONTRACTION" in trend.upper() or "SHRINKING" in trend.upper())
-            and not is_turbulent
-        )
+        # 判定は、フィードが返す区分値で行う（feed_schemas.py）。表示用の文言の部分一致は使わない。
+        # - macro["regime"]: RISK_ON / NEUTRAL / RISK_OFF（MacroLiquidityFeed）
+        # - gex["is_turbulence"]: bool（OptionsGexFeed.get_market_turbulence_warning）
+        # キーが無いときは NEUTRAL / 乱流なし として扱い、強気にも弱気にも倒さない。
+        macro_regime = str(macro.get("regime", MACRO_REGIME_NEUTRAL)).upper()
+        is_turbulent = gex.get("is_turbulence") is True
+        is_bull_liquidity = (macro_regime == MACRO_REGIME_RISK_ON) and not is_turbulent
+        is_tightening = (macro_regime == MACRO_REGIME_RISK_OFF) and not is_turbulent
 
         if is_turbulent:
             regime_name = "⚠️ ボラティリティ急変・ガンマ乱流相場"

@@ -8,6 +8,7 @@ from core.ai_hedge_fund.market_data_feed import MarketDataFeed
 from core.ai_hedge_fund.news_feed import NewsFeed
 from core.ai_hedge_fund.broker_client import PaperTradingEngine
 from core.ai_hedge_fund.macro_liquidity_feed import MacroLiquidityFeed
+from core.ai_hedge_fund.feed_schemas import build_gex_context
 from core.ai_hedge_fund.sec_insider_feed import SecInsiderFeed
 from core.ai_hedge_fund.options_gex_feed import OptionsGexFeed
 from core.openbb_provider import OpenBBProvider
@@ -128,7 +129,7 @@ class HedgeFundCouncil:
                 graph_lessons = GraphitiMemoryManager.query_temporal_lessons(
                     symbol=symbol,
                     sector=stock_data.get("sector"),
-                    macro_liquidity=macro_status.get("macro_weather")
+                    macro_liquidity=macro_status.get("regime")
                 )
         except Exception as ge:
             print(f"[HedgeFundCouncil] Graphiti query warning: {ge}")
@@ -196,10 +197,7 @@ class HedgeFundCouncil:
         context_data = {
             "macro_liquidity": macro_status,
             "insider_trading": insider_metrics,
-            "options_gex": {
-                "market_turbulence": market_turbulence.get("summary_text"),
-                "ticker_gex": gex_profile.get("summary_text")
-            },
+            "options_gex": build_gex_context(market_turbulence, gex_profile),
             "openbb_bundle": openbb_bundle,
             "qlib_alpha158": alpha158_summary,
             "lead_lag_causality": lead_lag_info,
@@ -226,7 +224,7 @@ class HedgeFundCouncil:
                     metadata={
                         "price": stock_data.get("current_price"),
                         "currency": stock_data.get("currency"),
-                        "macro": macro_status.get("macro_weather"),
+                        "macro": macro_status.get("regime"),
                         "graph_lessons_count": len(graph_lessons)
                     }
                 )
@@ -458,7 +456,7 @@ class HedgeFundCouncil:
             pb = stock_data.get("pb_ratio", "N/A")
             roe = stock_data.get("roe", "N/A")
             gex_summary = context_data.get("options_gex", {}).get("ticker_gex", "中立")
-            macro_summary = context_data.get("macro_liquidity", {}).get("summary_headline", "中立")
+            macro_summary = context_data.get("macro_liquidity", {}).get("summary_text", "不明")
 
             # Deterministic Mathematical Metrics (FinRobot Inspired)
             det = context_data.get("deterministic_metrics", {})

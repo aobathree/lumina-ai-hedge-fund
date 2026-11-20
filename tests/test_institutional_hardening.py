@@ -468,7 +468,9 @@ def test_12_tsfm_ood_adversarial_inversion_veto():
         "history_metrics": {"volatility_annualized_pct": 25.0, "sma_200": 15.0, "atr_pct": 4.0},
     }
     adversarial_context = {
-        "quantum_forecast": {
+        # The council passes this forecast under "dual_quantum" (hedge_fund_council.py).
+        # This test used "quantum_forecast", a key production never provides (#6).
+        "dual_quantum": {
             "consensus_status": "DOUBLE_BULLISH",
             "ensemble_expected_return_pct": 12.5,
         },

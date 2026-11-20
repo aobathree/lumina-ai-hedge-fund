@@ -1015,13 +1015,22 @@ class AutoTrader:
                 continue
 
             # 4. Pillar 2: Piotroski F-Score >= 6 Financial Quality Audit (FinanceToolkit Standard)
-            f_score_pre = stock_data_pre.get("piotroski_f_score", cand.get("piotroski_f_score", 7))
-            if f_score_pre is not None and f_score_pre < 6:
+            #    値が取れないときは既定値で通さず、見送る。
+            f_res = MarketDataFeed.get_piotroski_f_score(sym)
+            f_score_pre = f_res.get("score")
+            if f_score_pre is None:
+                f_why = f_res.get("error") or ("不足項目: " + ", ".join(f_res.get("missing", [])) if f_res.get("missing") else "財務諸表なし")
+                logs.append(f"[{now_str}] 🛡️ 【ピオトロスキー財務監査: 算出不能】{name} ({sym}) はF-Scoreを計算できないため見送ります（{f_why}）。")
+                continue
+            if f_score_pre < 6:
                 logs.append(f"[{now_str}] 🛡️ 【ピオトロスキー財務監査除外】{name} ({sym}) はF-Score（{f_score_pre}/9点）が基準（6点以上）未満のため、過剰債務・営業CF悪化リスクを排除し見送ります。")
                 continue
 
             # 5. Pillar 3: Cross-Sectional Relative Strength Rating Filter (vectorbt / O'Neil Standard)
-            cand_rs = cand.get("rs_rating", 80)
+            cand_rs = cand.get("rs_rating")
+            if cand_rs is None:
+                logs.append(f"[{now_str}] 🛡️ 【RS相対モメンタム: 算出不能】{name} ({sym}) はRS順位を計算できないため見送ります（1年リターンなし、または比較対象の不足）。")
+                continue
             if cand_rs < min_rs_required:
                 logs.append(f"[{now_str}] 🛡️ 【RS相対モメンタム除外】{name} ({sym}) は相対モメンタム順位（RS {cand_rs}）が現在レジーム基準（RS {min_rs_required}以上）未満のため、主役セクターへ資金を温存します。")
                 continue

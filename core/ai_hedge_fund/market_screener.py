@@ -361,6 +361,30 @@ class MarketScreener:
             "max_slots_cap": cls.BREADTH_DEFENSIVE_SLOTS if defensive else cls.BREADTH_NORMAL_SLOTS,
         }
 
+    # RS 順位を付けるのに要る最小の銘柄数。これ未満なら順位を付けない（None）。
+    RS_MIN_SAMPLE = 10
+
+    @classmethod
+    def assign_rs_ratings(cls, results: List[Dict[str, Any]]) -> None:
+        """
+        候補の中での 1 年リターンの順位を、1〜99 の rs_rating として各要素に書き込む。
+
+        - 1 年リターン（return_1y_pct）が無い銘柄は rs_rating=None。
+        - リターンのある銘柄が RS_MIN_SAMPLE 未満なら、全銘柄 None（少数の中の順位は意味が薄い）。
+        - 定義は「走査したユニバースの中での百分位」で、市場全体に対する順位ではない。
+        """
+        ranked = [r for r in results if r.get("return_1y_pct") is not None]
+        for r in results:
+            r["rs_rating"] = None
+        n = len(ranked)
+        if n < cls.RS_MIN_SAMPLE:
+            return
+        for r in ranked:
+            below = sum(1 for o in ranked if o["return_1y_pct"] < r["return_1y_pct"])
+            equal = sum(1 for o in ranked if o["return_1y_pct"] == r["return_1y_pct"])
+            pct = (below + 0.5 * equal) / n * 100.0
+            r["rs_rating"] = int(min(99, max(1, round(pct))))
+
     @classmethod
     def scan_opportunities(
         cls, 
@@ -476,6 +500,7 @@ class MarketScreener:
                     "dividend_yield": div,
                     "roe": roe,
                     "return_20d_pct": ret20,
+                    "return_1y_pct": data.get("history_metrics", {}).get("return_1y_pct"),
                     "sma_200": sma200,
                     "is_stage2": is_stage2,
                     "insider_metrics": insider_metrics,
@@ -493,6 +518,9 @@ class MarketScreener:
                 res = fut.result()
                 if res and res.get("current_price", 0) > 0:
                     results.append(res)
+
+        # RS 順位は、上位に絞る前の全候補で付ける
+        cls.assign_rs_ratings(results)
 
         # Sort descending by composite AI score
         results.sort(key=lambda x: x["ai_score"], reverse=True)
