@@ -73,6 +73,9 @@ class ForecastTracker:
             "downside_risk_prob": forecast_data.get("downside_risk_prob", 0.0),
             "upside_breakout_prob": forecast_data.get("upside_breakout_prob", 0.0),
             "confidence_score": forecast_data.get("confidence_score", 50),
+            # どのバックエンドの予測か（TimesFM 本体か、近似式か）。古い記録には無い
+            "backend": forecast_data.get("backend"),
+            "is_foundation_model": forecast_data.get("is_foundation_model"),
             "status": "PENDING",  # PENDING, ACCURATE, OUTPERFORM, UNDERPERFORM
             "actual_price": None,
             "actual_return_pct": None,
@@ -170,9 +173,19 @@ class ForecastTracker:
         # 直近の検証済みアイテム（最大5件）
         recent_items = verified[:5] if verified else []
 
+        # 検証済みの予測が、実際にどのバックエンドで作られたかに合わせて書く。
+        # 記録に is_foundation_model が無い（古い記録）ものは、基盤モデルの予測とは数えない。
+        n_native = sum(1 for x in verified if x.get("is_foundation_model") is True)
+        if verified and n_native == len(verified):
+            model_desc = "Google開発の時系列基盤モデル（TimesFM）による予測"
+        elif n_native > 0:
+            model_desc = f"時系列予測（検証済み {len(verified)} 件のうち TimesFM によるものは {n_native} 件、残りはモメンタム近似式）"
+        else:
+            model_desc = "モメンタム近似式による時系列予測（TimesFM は使っていません）"
+
         # note向けの美しいマークダウンテキスト
         note_md = f"""### 📊 【実績公開】AI未来予測の答え合わせ＆検証トラックレコード
-当AIヘッジファンド（Lumina AI）では、Google開発の時系列基盤モデル（TimesFM）による予測を**すべてデータベースに事前記録し、毎週完全自動で答え合わせ・検証**を行っています。
+当AIヘッジファンド（Lumina AI）では、{model_desc}を**すべてデータベースに事前記録し、毎週完全自動で答え合わせ・検証**を行っています。
 
 * **累計予測検証数**: {total_v}件
 * **80%信頼区間 的中率**: **{_fmt(acc_rate, ".1f", "%")}**

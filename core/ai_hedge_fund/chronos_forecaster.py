@@ -34,6 +34,12 @@ class ChronosForecaster:
     _pipeline = None
     _model_name = "amazon/chronos-bolt-tiny"  # 超軽量・高速・CPU動作可能
 
+    # 実際に動いたバックエンドの名前と、表示用のラベル
+    NATIVE_BACKEND = "amazon/chronos-bolt"
+    FALLBACK_BACKEND = "parametric_momentum_fallback"
+    NATIVE_LABEL = "Amazon Chronos"
+    FALLBACK_LABEL = "モメンタム近似（Chronos 未使用）"
+
     @classmethod
     def get_pipeline(cls):
         """Lazy loader for Chronos pipeline"""
@@ -84,7 +90,10 @@ class ChronosForecaster:
         if df is None or len(df) < 20:
             return {
                 "ticker": ticker,
-                "model": "Amazon Chronos-Bolt",
+                "model": "予測なし（データ取得不能）",
+                "backend": "unavailable",
+                "is_foundation_model": False,
+                "model_label": "予測なし（データ取得不能）",
                 "status": "DATA_UNAVAILABLE",
                 "current_price": 0.0,
                 "horizon_days": horizon_days,
@@ -158,6 +167,9 @@ class ChronosForecaster:
                 return {
                     "ticker": ticker,
                     "model": "Amazon Chronos-Bolt",
+                    "backend": cls.NATIVE_BACKEND,
+                    "is_foundation_model": True,
+                    "model_label": cls.NATIVE_LABEL,
                     "status": "SUCCESS_NEURAL",
                     "current_price": round(curr_price, 2),
                     "horizon_days": horizon_days,
@@ -208,8 +220,9 @@ class ChronosForecaster:
                 "upper_80": round(float(step_med * np.exp(z_80 * step_vol)), 2)
             })
 
+        # ここは Chronos を使っていない近似式。見出しとモデル名にそう書く。
         summary = (
-            f"【Amazon Chronos】{ticker} 現在値 {curr_price:,.1f} ➔ "
+            f"【{cls.FALLBACK_LABEL}】{ticker} 現在値 {curr_price:,.1f} ➔ "
             f"{horizon_days}営業日後予測: {final_median:,.1f} ({expected_return:+.2f}%) "
             f"[80%CI: {final_low:,.1f}〜{final_high:,.1f}] "
             f"急落率: {downside_prob:.1f}% / 急騰率: {upside_prob:.1f}% (確信度: {conf}点)"
@@ -217,7 +230,10 @@ class ChronosForecaster:
 
         return {
             "ticker": ticker,
-            "model": "Amazon Chronos (Fast Algorithmic)",
+            "model": cls.FALLBACK_LABEL,
+            "backend": cls.FALLBACK_BACKEND,
+            "is_foundation_model": False,
+            "model_label": cls.FALLBACK_LABEL,
             "status": "SUCCESS",
             "current_price": round(curr_price, 2),
             "horizon_days": horizon_days,

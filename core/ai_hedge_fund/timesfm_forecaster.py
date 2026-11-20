@@ -66,6 +66,11 @@ class TimesFMForecaster:
             "forecast_config": cfg,
         }
 
+    # 実際に動いたバックエンドの名前と、表示用のラベル
+    FALLBACK_BACKEND = "parametric_log_return_fallback"
+    NATIVE_LABEL = "Google TimesFM"
+    FALLBACK_LABEL = "モメンタム近似（TimesFM 未使用）"
+
     @classmethod
     def _get_native_timesfm_model(cls, forecast_mode: str = "log_returns", max_horizon: int = 16) -> Optional[Any]:
         """
@@ -260,6 +265,8 @@ class TimesFMForecaster:
                 "ticker": ticker,
                 "status": "DATA_UNAVAILABLE",
                 "backend": "unavailable",
+                "is_foundation_model": False,
+                "model_label": "予測なし（データ取得不能）",
                 "pinned_config": pinned_cfg,
                 "current_price": 0.0,
                 "horizon_days": horizon_days,
@@ -344,7 +351,7 @@ class TimesFMForecaster:
                     "lower_80": round(float(low_p), 2),
                     "upper_80": round(float(high_p), 2)
                 })
-            backend_used = "parametric_log_return_fallback"
+            backend_used = cls.FALLBACK_BACKEND
 
         final_median = trajectory[-1]["median"]
         final_lower = trajectory[-1]["lower_80"]
@@ -383,8 +390,11 @@ class TimesFMForecaster:
         conf_score = int(np.clip(conf_score, 50, 95))
 
         # 6. サマリーテキスト生成（日本語）
+        # 見出しは、実際に動いたバックエンドに合わせる。近似式の結果を TimesFM の予測と書かない。
+        is_foundation = (backend_used != cls.FALLBACK_BACKEND)
+        model_label = cls.NATIVE_LABEL if is_foundation else cls.FALLBACK_LABEL
         summary_text = (
-            f"【Google TimesFM 5日先予測】銘柄: {ticker} (現在値: ${curr_price:,.2f})\n"
+            f"【{model_label} {horizon_days}日先予測】銘柄: {ticker} (現在値: ${curr_price:,.2f})\n"
             f"・5日後中央値予測: ${final_median:,.2f} ({expected_ret:+.1f}%)\n"
             f"・80%想定レンジ: ${final_lower:,.2f} 〜 ${final_upper:,.2f}\n"
             f"・急落リスク確率(-3%超): {downside_risk_prob:.1f}% | 上昇突破確率(+3%超): {upside_breakout_prob:.1f}%\n"
@@ -397,6 +407,8 @@ class TimesFMForecaster:
             "ticker": ticker,
             "status": "SUCCESS",
             "backend": backend_used,
+            "is_foundation_model": is_foundation,
+            "model_label": model_label,
             "pinned_config": pinned_cfg,
             "current_price": round(curr_price, 2),
             "horizon_days": horizon_days,
