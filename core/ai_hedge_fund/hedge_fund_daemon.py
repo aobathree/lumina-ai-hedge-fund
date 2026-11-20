@@ -47,7 +47,9 @@ class HedgeFundDaemon:
         self.total_cycles: int = 0
         self.total_buys: int = 0
         self.total_sells: int = 0
-        self.engine = PaperTradingEngine()
+        # LUMINA_BROKER で選ぶ（既定は paper = PaperTradingEngine）
+        from core.ai_hedge_fund.webull_intent_broker import create_broker
+        self.engine = create_broker()
         self._load_persisted_state()
 
     def _state_file_path(self) -> str:

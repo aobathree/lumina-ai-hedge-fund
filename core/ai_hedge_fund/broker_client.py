@@ -92,10 +92,14 @@ class PaperTradingEngine(BaseBrokerClient):
         self._reflexion_write_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         self._writer_thread: Optional[threading.Thread] = None
         if not db_path:
+            # LUMINA_DB_PATH があれば、引数なしで作られる台帳はすべてそこを見る
+            db_path = os.getenv("LUMINA_DB_PATH") or None
+        if not db_path:
             app_data_dir = os.path.join(os.getenv('APPDATA', ''), 'LuminaAI')
             os.makedirs(app_data_dir, exist_ok=True)
             self.db_path = os.path.join(app_data_dir, 'hedge_fund_portfolio.db')
         else:
+            os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
             self.db_path = db_path
         self._init_db()
         self._start_single_writer_worker()
